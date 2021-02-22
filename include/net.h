@@ -17,9 +17,6 @@ typedef struct _net
 {
 	std::vector<Layer> layers;
 	std::vector<torch::jit::IValue> input;
-	//std::vector<torch::jit::Module> child;
-	//std::vector<std::pair<int, int>> block; // resnet,densenet
-	int j; //resnet
 	at::Tensor identity;
 	int index; //layer index
 	int index_n; //network

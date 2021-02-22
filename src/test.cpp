@@ -17,8 +17,8 @@
 #define n_dense 0
 #define n_res 0
 #define n_alex 0
-#define n_vgg 1
-#define n_wide 0
+#define n_vgg 0
+#define n_wide 1
 
 
 #define n_threads 3
@@ -127,15 +127,12 @@ int main(int argc, const char* argv[]) {
     net_input_dense[i].index_n = i;
   }
 
-  // for(int i=0;i<n_res;i++){
-	//   get_submodule_resnet18(resModule[i], reschild[i],resblock);
-  //   std::cout << "End get submodule_resnet "<< i << "\n";
-	//   net_input_res[i].child = reschild[i];
-  //   net_input_res[i].block = resblock;
-	//   net_input_res[i].layer = (Layer*)malloc(sizeof(Layer)*reschild[i].size());
-	//   net_input_res[i].input = inputs;
-  //   net_input_res[i].index_n = i+n_dense;
-  // }
+  for(int i=0;i<n_res;i++){
+	  get_submodule_resnet18(resModule[i], net_input_res[i]);
+    std::cout << "End get submodule_resnet "<< i << "\n";
+	  net_input_res[i].input = inputs;
+    net_input_res[i].index_n = i+n_dense;
+  }
 
   for(int i=0;i<n_alex;i++){
 	  get_submodule_alexnet(alexModule[i], net_input_alex[i]);
@@ -151,15 +148,12 @@ int main(int argc, const char* argv[]) {
     net_input_vgg[i].index_n = i + n_alex + n_res + n_dense;
   }
 
-  // for(int i=0;i<n_wide;i++){
-	//   get_submodule_resnet18(wideModule[i], widechild[i],wideblock);
-  //   std::cout << "End get submodule_widenet "<< i << "\n";
-	//   net_input_wide[i].child = widechild[i];
-  //   net_input_wide[i].block = wideblock;
-	//   net_input_wide[i].layer = (Layer*)malloc(sizeof(Layer)*widechild[i].size());
-	//   net_input_wide[i].input = inputs;
-  //   net_input_wide[i].index_n = i+n_alex + n_res + n_dense + n_vgg;
-  // }
+  for(int i=0;i<n_wide;i++){
+	  get_submodule_resnet18(wideModule[i], net_input_wide[i]);
+    std::cout << "End get submodule_widenet "<< i << "\n";
+	  net_input_wide[i].input = inputs;
+    net_input_wide[i].index_n = i+n_alex + n_res + n_dense + n_vgg;
+  }
 
 for(int i=0;i<n_dense;i++){
   cout<<"dfdfewewfwe\n";
@@ -168,12 +162,12 @@ for(int i=0;i<n_dense;i++){
       exit(0);
     }
   }
-  // for(int i=0;i<n_res;i++){
-  //   if (pthread_create(&networkArray_res[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_res[i]) < 0){
-  //     perror("thread error");
-  //     exit(0);
-  //   }
-  // }
+  for(int i=0;i<n_res;i++){
+    if (pthread_create(&networkArray_res[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_res[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
   for(int i=0;i<n_alex;i++){
     if (pthread_create(&networkArray_alex[i], NULL, (void *(*)(void*))predict_alexnet, &net_input_alex[i]) < 0){
       perror("thread error");
@@ -186,28 +180,28 @@ for(int i=0;i<n_dense;i++){
       exit(0);
     }
   }
-  // for(int i=0;i<n_wide;i++){
-  //   if (pthread_create(&networkArray_wide[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_wide[i]) < 0){
-  //     perror("thread error");
-  //     exit(0);
-  //   }
-  // }
+  for(int i=0;i<n_wide;i++){
+    if (pthread_create(&networkArray_wide[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_wide[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
 
   for (int i = 0; i < n_dense; i++){
     pthread_join(networkArray_dense[i], NULL);
   }
-  // for (int i = 0; i < n_res; i++){
-  //   pthread_join(networkArray_res[i], NULL);
-  // }
+  for (int i = 0; i < n_res; i++){
+    pthread_join(networkArray_res[i], NULL);
+  }
   for (int i = 0; i < n_alex; i++){
     pthread_join(networkArray_alex[i], NULL);
   }
   for (int i = 0; i < n_vgg; i++){
     pthread_join(networkArray_vgg[i], NULL);
   }
-  // for (int i = 0; i < n_wide; i++){
-  //   pthread_join(networkArray_wide[i], NULL);
-  // }
+  for (int i = 0; i < n_wide; i++){
+    pthread_join(networkArray_wide[i], NULL);
+  }
   free(cond_t);
   free(mutex_t);
   free(cond_i);
