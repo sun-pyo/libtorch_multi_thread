@@ -16,8 +16,8 @@
 
 #define n_dense 0
 #define n_res 0
-#define n_alex 1
-#define n_vgg 0
+#define n_alex 0
+#define n_vgg 1
 #define n_wide 0
 
 
@@ -117,22 +117,10 @@ int main(int argc, const char* argv[]) {
   pthread_t networkArray_alex[n_alex];
   pthread_t networkArray_vgg[n_vgg];
   pthread_t networkArray_wide[n_wide];
-  
-  std::vector<torch::jit::Module> densechild[n_dense];
-  std::vector<torch::jit::Module> reschild[n_res];
-  std::vector<torch::jit::Module> alexchild[n_alex];
-  std::vector<torch::jit::Module> vggchild[n_vgg];
-  std::vector<torch::jit::Module> widechild[n_wide];  
-  
-  std::vector<pair<int,int>> denseblock;
-  std::vector<pair<int,int>> resblock;
-  std::vector<pair<int,int>> wideblock;
 
   std::vector<string> denselayer_name;
 
   for(int i=0;i<n_dense;i++){
-    denseblock.clear();
-    denselayer_name.clear();
 	  get_submodule_densenet(denseModule[i], net_input_dense[i]);
     std::cout << "End get submodule_densenet "<< i << "\n";
     net_input_dense[i].input = inputs;
@@ -156,15 +144,12 @@ int main(int argc, const char* argv[]) {
     net_input_alex[i].index_n = i+ n_res + n_dense;
   }
 
-  // for(int i=0;i<n_vgg;i++){
-	//   get_submodule_vgg(vggModule[i], vggchild[i]);
-  //   std::cout << "End get submodule_vgg " << i << "\n";
-	//   //net_input_vgg[i] = (Net *)malloc(sizeof(Net));
-	//   net_input_vgg[i].child = vggchild[i];
-	//   net_input_vgg[i].layer = (Layer*)malloc(sizeof(Layer)*vggchild[i].size());
-	//   net_input_vgg[i].input = inputs;
-  //   net_input_vgg[i].index_n = i + n_alex + n_res + n_dense;
-  // }
+  for(int i=0;i<n_vgg;i++){
+	  get_submodule_vgg(vggModule[i], net_input_vgg[i]);
+    std::cout << "End get submodule_vgg " << i << "\n";
+	  net_input_vgg[i].input = inputs;
+    net_input_vgg[i].index_n = i + n_alex + n_res + n_dense;
+  }
 
   // for(int i=0;i<n_wide;i++){
 	//   get_submodule_resnet18(wideModule[i], widechild[i],wideblock);
@@ -195,12 +180,12 @@ for(int i=0;i<n_dense;i++){
       exit(0);
     }
   }
-  // for(int i=0;i<n_vgg;i++){
-	//   if (pthread_create(&networkArray_vgg[i], NULL, (void *(*)(void*))predict_vgg, &net_input_vgg[i]) < 0){
-  //     perror("thread error");
-  //     exit(0);
-  //   }
-  // }
+  for(int i=0;i<n_vgg;i++){
+	  if (pthread_create(&networkArray_vgg[i], NULL, (void *(*)(void*))predict_vgg, &net_input_vgg[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
   // for(int i=0;i<n_wide;i++){
   //   if (pthread_create(&networkArray_wide[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_wide[i]) < 0){
   //     perror("thread error");
@@ -217,9 +202,9 @@ for(int i=0;i<n_dense;i++){
   for (int i = 0; i < n_alex; i++){
     pthread_join(networkArray_alex[i], NULL);
   }
-  // for (int i = 0; i < n_vgg; i++){
-  //   pthread_join(networkArray_vgg[i], NULL);
-  // }
+  for (int i = 0; i < n_vgg; i++){
+    pthread_join(networkArray_vgg[i], NULL);
+  }
   // for (int i = 0; i < n_wide; i++){
   //   pthread_join(networkArray_wide[i], NULL);
   // }
