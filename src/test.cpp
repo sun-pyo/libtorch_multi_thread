@@ -13,12 +13,14 @@
 #include "vgg.h"
 #include "resnet18.h"
 #include "densenet.h"
+#include "squeeze.h"
 
 #define n_dense 0
 #define n_res 0
 #define n_alex 0
 #define n_vgg 0
-#define n_wide 1
+#define n_wide 0
+#define n_squeeze 1
 
 
 #define n_threads 3
@@ -27,6 +29,7 @@ extern void *predict_alexnet(Net *input);
 extern void *predict_vgg(Net *input);
 extern void *predict_resnet18(Net *input);
 extern void *predict_densenet(Net *input);
+extern void *predict_squeeze(Net *input);
 
 namespace F = torch::nn::functional;
 using namespace std;
@@ -55,7 +58,7 @@ int* cond_i;
 
 int main(int argc, const char* argv[]) {
 
-  int n_all = n_alex + n_vgg + n_res + n_dense + n_wide;
+  int n_all = n_alex + n_vgg + n_res + n_dense + n_wide + n_squeeze;
 
   thpool = thpool_init(n_threads);
 
@@ -64,7 +67,7 @@ int main(int argc, const char* argv[]) {
   torch::jit::script::Module alexModule[n_alex];
   torch::jit::script::Module vggModule[n_vgg];
   torch::jit::script::Module wideModule[n_wide];
-  
+  torch::jit::script::Module squeezeModule[n_squeeze];
   try {
     for (int i=0;i<n_dense;i++){    
     	denseModule[i] = torch::jit::load("../densenet_model.pt");
@@ -80,6 +83,9 @@ int main(int argc, const char* argv[]) {
     }
     for (int i=0;i<n_wide;i++){    
     	wideModule[i] = torch::jit::load("../wideresnet_model.pt");
+    }
+    for (int i=0;i<n_squeeze;i++){    
+    	squeezeModule[i] = torch::jit::load("../squeeze_model.pt");
     }
   }
   catch (const c10::Error& e) {
@@ -111,14 +117,14 @@ int main(int argc, const char* argv[]) {
   Net net_input_alex[n_alex];
   Net net_input_vgg[n_vgg];
   Net net_input_wide[n_wide];
+  Net net_input_squeeze[n_squeeze];
 
   pthread_t networkArray_dense[n_dense];
   pthread_t networkArray_res[n_res];
   pthread_t networkArray_alex[n_alex];
   pthread_t networkArray_vgg[n_vgg];
   pthread_t networkArray_wide[n_wide];
-
-  std::vector<string> denselayer_name;
+  pthread_t networkArray_squeeze[n_squeeze];
 
   for(int i=0;i<n_dense;i++){
 	  get_submodule_densenet(denseModule[i], net_input_dense[i]);
@@ -155,6 +161,13 @@ int main(int argc, const char* argv[]) {
     net_input_wide[i].index_n = i+n_alex + n_res + n_dense + n_vgg;
   }
 
+  for(int i=0;i<n_squeeze;i++){
+	  get_submodule_squeeze(squeezeModule[i], net_input_squeeze[i]);
+    std::cout << "End get submodule_widenet "<< i << "\n";
+	  net_input_squeeze[i].input = inputs;
+    net_input_squeeze[i].index_n = i+n_alex + n_res + n_dense + n_vgg + n_wide;
+  }
+
 for(int i=0;i<n_dense;i++){
   cout<<"dfdfewewfwe\n";
     if (pthread_create(&networkArray_dense[i], NULL, (void *(*)(void*))predict_densenet, &net_input_dense[i]) < 0){
@@ -187,6 +200,13 @@ for(int i=0;i<n_dense;i++){
     }
   }
 
+  for(int i=0;i<n_squeeze;i++){
+    if (pthread_create(&networkArray_squeeze[i], NULL, (void *(*)(void*))predict_squeeze, &net_input_squeeze[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
+
   for (int i = 0; i < n_dense; i++){
     pthread_join(networkArray_dense[i], NULL);
   }
@@ -201,6 +221,9 @@ for(int i=0;i<n_dense;i++){
   }
   for (int i = 0; i < n_wide; i++){
     pthread_join(networkArray_wide[i], NULL);
+  }
+  for (int i = 0; i < n_squeeze; i++){
+    pthread_join(networkArray_squeeze[i], NULL);
   }
   free(cond_t);
   free(mutex_t);
