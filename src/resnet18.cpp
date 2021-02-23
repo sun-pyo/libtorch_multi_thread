@@ -10,20 +10,6 @@
 using namespace std;
 namespace F = torch::nn::functional;
 
-struct add_relu_module : torch::jit::Module{
-    torch::jit::Module origin_module;
-    add_relu_module(torch::jit::Module ori) : origin_module(ori){
-        register_module("origin_module", origin_module);
-    }
-
-    torch::jit::IValue forward(std::vector<torch::jit::IValue> inputs) {
-        at::Tensor out;
-        out = origin_module.forward(inputs).toTensor();
-        out = torch::relu(out);
-        return torch::jit::IValue(out);
-    }
-};
-
 void get_submodule_resnet18(torch::jit::script::Module module, Net &net){
     Layer t_layer;
     string name;
