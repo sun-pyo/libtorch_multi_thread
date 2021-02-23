@@ -4,6 +4,7 @@
 #include <vector>
 #include <torch/torch.h>
 #include <functional>
+#include "cuda_runtime.h"
 
 typedef struct _layer
 {
@@ -11,6 +12,7 @@ typedef struct _layer
 	at::Tensor output;
 	std::string name;
 	torch::jit::Module layer;
+	bool flag;
 }Layer;
 
 typedef struct _net
@@ -18,6 +20,7 @@ typedef struct _net
 	std::vector<Layer> layers;
 	std::vector<torch::jit::IValue> input;
 	at::Tensor identity;
+	std::vector<cudaEvent_t> record;
 	int index; //layer index
 	int index_n; //network
 }Net;

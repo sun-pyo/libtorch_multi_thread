@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <functional>
 #include <memory>
+#include "cuda_runtime.h"
 
 #include "squeeze.h"
 
@@ -16,6 +17,7 @@ void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
 	Layer t_layer;
     if(module.children().size() == 0){
         t_layer.layer = module;
+		t_layer.flag = false;
 		t_layer.name = "none";
         net.layers.push_back(t_layer);
         return;
@@ -28,9 +30,14 @@ void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
 					i++;
 					continue;
 				}
-				t_layer.name = fire_sub.name;
+				t_layer.name = fire_sub.name; // expand1x1 , expand3x3 , squeeze
 				t_layer.layer = fire_sub.value;
+				t_layer.flag = false;
 				net.layers.push_back(t_layer);
+				if(fire_sub.name == "expand3x3"){
+					t_layer.name = "concat";
+					net.layers.push_back(t_layer);
+				}
 				i++;
 			}
 			break;
@@ -75,7 +82,7 @@ void forward_squeeze(th_arg *th){
 	std::vector<torch::jit::IValue> inputs;
 	int k = nl->net->index;
 	if(nl->net->layers[k].name == "expand1x1"){
-		inputs.push_back(nl->net->layers[k-1].output);
+		inputs.push_back(nl->net->layers[k-1].output); //check 
 	}
 	else if(nl->net->layers[k].name == "expand3x3"){
 		inputs.push_back(nl->net->layers[k-2].output);
@@ -83,17 +90,41 @@ void forward_squeeze(th_arg *th){
 	else{ 
 		inputs = nl->net->input;
 	}
-
+	if(nl->net->layers[k].name == "expand1x1"){
+		cond_i[nl->net->index_n]=0;
+		pthread_cond_signal(&cond_t[nl->net->index_n]);
+	}
+	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);  
 	at::Tensor out;
 	std::cout<<"k = "<<k<<"\n";
 
 	if(k == nl->net->layers.size()-1){
+		cout<<"11111111111111\n";
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
 		out = out.view({out.size(0), -1});
 	}
+	else if(nl->net->layers[k].name == "concat"){
+		cout<<"\n cat \n";
+		out = torch::cat({nl->net->layers[k-2].output, nl->net->layers[k-1].output}, 1);
+	}
 	else if(nl->net->layers[k].name != "none"){
-		out = nl->net->layers[k].layer.forward(inputs).toTensor();
-		out = torch::relu(out);
+		if(nl->net->layers[k].name == "expand1x1"){
+			cout<<"expand1x1  out\n";
+			out = nl->net->layers[k].layer.forward(inputs).toTensor();
+			out = torch::relu(out);
+			cudaEventRecord(nl->net->record[0],0);
+		}
+		else if(nl->net->layers[k].name == "expand3x3"){
+			cout<<"expand3x3 out\n";
+			out = nl->net->layers[k].layer.forward(inputs).toTensor();
+			out = torch::relu(out);
+			cudaEventRecord(nl->net->record[1],0);
+			cout<<"expand3x3 record\n";
+		}
+		else{
+			out = nl->net->layers[k].layer.forward(inputs).toTensor();
+			out = torch::relu(out);
+		}
 	}
 	else{
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
@@ -102,13 +133,37 @@ void forward_squeeze(th_arg *th){
 
 	std::cout<<"before out\n";
 
-	if(nl->net->layers[k].name == "expand3x3"){
-		out = torch::cat({nl->net->layers[k-1].output, out}, 1);
+	if(nl->net->layers[k].name == "expand1x1"){
+		cudaEventSynchronize(nl->net->record[0]);
+		nl->net->layers[k].output = out;
+		nl->net->layers[k].flag = true;
 	}
-	nl->net->layers[k].output = out;
+	else if(nl->net->layers[k].name == "expand3x3"){
+		cudaEventSynchronize(nl->net->record[1]);
+		nl->net->layers[k].output = out;
+		nl->net->layers[k].flag = true;
+	}
+	else
+		nl->net->layers[k].output = out;
+
+
+	
 	std::cout<<"after out\n";
+	pthread_mutex_lock(&mutex_t[th->arg->net->index_n]);
 	cond_i[nl->net->index_n]=0;
-	pthread_cond_signal(&cond_t[nl->net->index_n]);
+	if(nl->net->layers[k].name != "expand1x1" && nl->net->layers[k].name != "expand3x3"){
+		pthread_cond_signal(&cond_t[nl->net->index_n]);
+	}else if(nl->net->layers[k].name == "expand1x1" && nl->net->layers[k+1].flag){
+		nl->net->layers[k+1].flag = false;
+		nl->net->layers[k].flag = false;
+		pthread_cond_signal(&cond_t[nl->net->index_n]);
+	}
+	else if(nl->net->layers[k].name == "expand3x3" && nl->net->layers[k-1].flag){
+		nl->net->layers[k-1].flag = false;
+		nl->net->layers[k].flag = false;
+		pthread_cond_signal(&cond_t[nl->net->index_n]);
+	}
+
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);		
 }
 
