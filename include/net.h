@@ -6,13 +6,15 @@
 #include <functional>
 #include "cuda_runtime.h"
 
+struct Concat : torch::jit::Module{};
+
 typedef struct _layer
 {
-	//std::vector<torch::jit::IValue> input;
 	at::Tensor output;
 	std::string name;
 	torch::jit::Module layer;
-	bool flag;
+	bool exe_success;
+	std::vector<int> concat_idx;
 }Layer;
 
 typedef struct _net
