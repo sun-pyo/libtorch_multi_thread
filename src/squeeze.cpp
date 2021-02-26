@@ -19,6 +19,7 @@ void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
     if(module.children().size() == 0){
         t_layer.layer = module;
 		t_layer.exe_success = false;
+		t_layer.input_idx = 0;
 		t_layer.name = "none";
         net.layers.push_back(t_layer);
         return;
@@ -31,11 +32,18 @@ void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
 					i++;
 					continue;
 				}
+				else if(fire_sub.name == "expand3x3"){
+					t_layer.input_idx = -2;
+				}
+				else{
+					t_layer.input_idx = 0;
+				}
 				t_layer.name = fire_sub.name; // expand1x1 , expand3x3 , squeeze
 				t_layer.layer = fire_sub.value;
 				t_layer.exe_success = false;
 				net.layers.push_back(t_layer);
 				if(fire_sub.name == "expand3x3"){
+					t_layer.input_idx = 0;
 					t_layer.layer = concat;
 					t_layer.name = "concat";
 					net.layers.push_back(t_layer);
@@ -86,11 +94,8 @@ void forward_squeeze(th_arg *th){
 	std::vector<torch::jit::IValue> inputs;
 	int k = nl->net->index;
 	int j;
-	if(nl->net->layers[k].name == "expand1x1"){
-		inputs.push_back(nl->net->layers[k-1].output); //check 
-	}
-	else if(nl->net->layers[k].name == "expand3x3"){
-		inputs.push_back(nl->net->layers[k-2].output);
+	if(nl->net->layers[k].name == "expand3x3"){
+		inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
 	}
 	else{ 
 		inputs = nl->net->input;

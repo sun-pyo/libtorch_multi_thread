@@ -15,6 +15,7 @@ typedef struct _layer
 	torch::jit::Module layer;
 	bool exe_success;
 	std::vector<int> from_idx;
+	int input_idx;
 }Layer;
 
 typedef struct _net
