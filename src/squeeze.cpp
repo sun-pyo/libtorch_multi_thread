@@ -14,10 +14,11 @@ namespace F = torch::nn::functional;
 using namespace std;
 
 void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
+	Dummy concat;
 	Layer t_layer;
     if(module.children().size() == 0){
         t_layer.layer = module;
-		t_layer.flag = false;
+		t_layer.exe_success = false;
 		t_layer.name = "none";
         net.layers.push_back(t_layer);
         return;
@@ -32,9 +33,10 @@ void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
 				}
 				t_layer.name = fire_sub.name; // expand1x1 , expand3x3 , squeeze
 				t_layer.layer = fire_sub.value;
-				t_layer.flag = false;
+				t_layer.exe_success = false;
 				net.layers.push_back(t_layer);
 				if(fire_sub.name == "expand3x3"){
+					t_layer.layer = concat;
 					t_layer.name = "concat";
 					net.layers.push_back(t_layer);
 				}
@@ -61,6 +63,8 @@ void *predict_squeeze(Net *input){
 		th_arg th;
 		th.arg = &nl;
 
+		input->layers[i].exe_success = false;
+
 		std::cout << "Before thpool add work Squeeze "<< i << "\n";
 		thpool_add_work(thpool,(void(*)(void *))forward_squeeze,&th);
 		std::cout << "After thpool add work Squeeze "<< i << "\n";
@@ -81,6 +85,7 @@ void forward_squeeze(th_arg *th){
 	netlayer *nl = th->arg;
 	std::vector<torch::jit::IValue> inputs;
 	int k = nl->net->index;
+	int j;
 	if(nl->net->layers[k].name == "expand1x1"){
 		inputs.push_back(nl->net->layers[k-1].output); //check 
 	}
@@ -97,9 +102,9 @@ void forward_squeeze(th_arg *th){
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);  
 	at::Tensor out;
 	std::cout<<"k = "<<k<<"\n";
+	
 
 	if(k == nl->net->layers.size()-1){
-		cout<<"11111111111111\n";
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
 		out = out.view({out.size(0), -1});
 	}
@@ -109,12 +114,14 @@ void forward_squeeze(th_arg *th){
 	}
 	else if(nl->net->layers[k].name != "none"){
 		if(nl->net->layers[k].name == "expand1x1"){
+			j=1;
 			cout<<"expand1x1  out\n";
 			out = nl->net->layers[k].layer.forward(inputs).toTensor();
 			out = torch::relu(out);
 			cudaEventRecord(nl->net->record[0],0);
 		}
 		else if(nl->net->layers[k].name == "expand3x3"){
+			j=-1;
 			cout<<"expand3x3 out\n";
 			out = nl->net->layers[k].layer.forward(inputs).toTensor();
 			out = torch::relu(out);
@@ -136,12 +143,12 @@ void forward_squeeze(th_arg *th){
 	if(nl->net->layers[k].name == "expand1x1"){
 		cudaEventSynchronize(nl->net->record[0]);
 		nl->net->layers[k].output = out;
-		nl->net->layers[k].flag = true;
+		nl->net->layers[k].exe_success = true;
 	}
 	else if(nl->net->layers[k].name == "expand3x3"){
 		cudaEventSynchronize(nl->net->record[1]);
 		nl->net->layers[k].output = out;
-		nl->net->layers[k].flag = true;
+		nl->net->layers[k].exe_success = true;
 	}
 	else
 		nl->net->layers[k].output = out;
@@ -153,16 +160,15 @@ void forward_squeeze(th_arg *th){
 	cond_i[nl->net->index_n]=0;
 	if(nl->net->layers[k].name != "expand1x1" && nl->net->layers[k].name != "expand3x3"){
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
-	}else if(nl->net->layers[k].name == "expand1x1" && nl->net->layers[k+1].flag){
-		nl->net->layers[k+1].flag = false;
-		nl->net->layers[k].flag = false;
+	}else if(nl->net->layers[k].exe_success && nl->net->layers[k+j].exe_success){
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}
+	/*
 	else if(nl->net->layers[k].name == "expand3x3" && nl->net->layers[k-1].flag){
 		nl->net->layers[k-1].flag = false;
 		nl->net->layers[k].flag = false;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
-	}
+	}*/
 
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);		
 }

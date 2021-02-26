@@ -6,7 +6,7 @@
 #include <functional>
 #include "cuda_runtime.h"
 
-struct Concat : torch::jit::Module{};
+struct Dummy : torch::jit::Module{};
 
 typedef struct _layer
 {
@@ -14,7 +14,7 @@ typedef struct _layer
 	std::string name;
 	torch::jit::Module layer;
 	bool exe_success;
-	std::vector<int> concat_idx;
+	std::vector<int> from_idx;
 }Layer;
 
 typedef struct _net

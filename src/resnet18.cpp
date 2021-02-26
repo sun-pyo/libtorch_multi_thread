@@ -121,32 +121,25 @@ void forward_resnet18(th_arg *th){
 	int k =nl->net->index;
 	at::Tensor out;
 
-    std::cout<<"k = "<<k<<"\n";
     if(nl->net->layers[k].name.find("_first") != std::string::npos){
-	   cout<<"first\n";
        identity = inputs[0].toTensor(); 
     }
 
     if(k == nl->net->layers.size()-1) //flatten
     {	
-        cout<<"if 1 enter\n";
         
 		out = inputs[0].toTensor().view({inputs[0].toTensor().size(0), -1});
        	inputs.clear();
        	inputs.push_back(out);
        	out = nl->net->layers[k].layer.forward(inputs).toTensor();
 
-        cout<<"if 1 out\n";
     }
     else if(nl->net->layers[k].name.find("_last") != std::string::npos){
-        cout<<"if 2 enter\n";
 		//BasicBlock and downsample 
         if(nl->net->layers[k].name.find("_downsample") != std::string::npos){
-            cout<<"downsample\n";
 			inputs_cpy.clear();
 			inputs_cpy.push_back(identity);
 			identity = nl->net->layers[k].layer.forward(inputs_cpy).toTensor();
-            cout<<"downsample out\n";
 		    out = nl->net->layers[k-1].output;
 		} //BasicBlock
 		else{
@@ -154,16 +147,12 @@ void forward_resnet18(th_arg *th){
         }
 		out += identity;
 		out = torch::relu(out);
-        cout<<"if 2 out\n";
     }
 	else{
-        cout<<"if 3 enter\n";
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
         if(nl->net->layers[k].name.find("bn_relu") != std::string::npos ){
-            cout<<"relu \n";
             out = torch::relu(out);
         }
-        cout<<"if 3 out\n";
 	}
 
     nl->net->layers[k].output = out;

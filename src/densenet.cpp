@@ -11,7 +11,7 @@ using namespace std;
 namespace F = torch::nn::functional;
 
 void get_submodule_densenet(torch::jit::script::Module module,Net &net){
-	Concat concat;
+	Dummy concat;
     Layer t_layer;
     if(module.children().size() == 0){
         t_layer.layer = module;
@@ -23,18 +23,18 @@ void get_submodule_densenet(torch::jit::script::Module module,Net &net){
             int size = net.layers.size();
             for(auto layer : children.value.named_children()){
                 if(layer.name.find("denselayer") != std::string::npos){
-                    t_layer.concat_idx = {-1};
+                    t_layer.from_idx = {-1};
                     t_layer.layer = concat;
                     t_layer.name = "Concat";
                     net.layers.push_back(t_layer);
                     for(auto in_denselayer : layer.value.named_children()){
-                        t_layer.concat_idx.clear();
+                        t_layer.from_idx.clear();
                         t_layer.layer = in_denselayer.value;
                         t_layer.name = "None";
                         net.layers.push_back(t_layer);
                         
                     }
-                    t_layer.concat_idx = {-7, -1};
+                    t_layer.from_idx = {-7, -1};
                     t_layer.layer = concat;
                     t_layer.name = "Concat";
                     net.layers.push_back(t_layer);
@@ -98,8 +98,8 @@ void forward_densenet(th_arg *th){
     else if(nl->net->layers[k].name == "Concat"){
         if(k==18) cout<<"2222222222222\n";
         std::vector<at::Tensor> cat_input;
-        for(int i=0;i<nl->net->layers[k].concat_idx.size();i++){
-            cat_input.push_back(nl->net->layers[k + nl->net->layers[k].concat_idx[i]].output);
+        for(int i=0;i<nl->net->layers[k].from_idx.size();i++){
+            cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
         }
         out = torch::cat(cat_input, 1);
     }
