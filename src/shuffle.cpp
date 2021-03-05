@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string>
 #include <memory>
+#include "cuda_runtime.h"
 
 #include "shuffle.h"
 
@@ -18,6 +19,7 @@ void get_submodule_shuffle(torch::jit::script::Module module, Net &net){
     if(module.children().size() == 0){
         t_layer.input_idx = -1;
         t_layer.layer = module;
+        t_layer.exe_success = false;
         net.layers.push_back(t_layer);
         return;
     }
@@ -29,30 +31,29 @@ void get_submodule_shuffle(torch::jit::script::Module module, Net &net){
                         if(branch.name == "branch1"){
                             if(branch.value.children().size() != 0){
                                 exist_branch1 = true;
-                                for(auto br : branch.value.named_children()){
-                                        t_layer.input_idx = -1;
-                                        t_layer.name = branch.name;
-                                        t_layer.layer = br.value;
-                                        net.layers.push_back(t_layer);
-                                }
-                            }
-                        }
-                        else if(branch.name == "branch2"){
-                            for(auto br : branch.value.named_children()){
                                 t_layer.input_idx = -1;
-                                if(!exist_branch1 && br.name == "0") t_layer.name = "chunk_and_branch2";
-                                else if(exist_branch1 && br.name == "0")  {
-                                        t_layer.input_idx = -6;
-                                        t_layer.name = br.name;
-                                }
-                                else t_layer.name = br.name;
-                                t_layer.layer = br.value;
+                                t_layer.name = branch.name;
+                                t_layer.layer = branch.value;
+                                t_layer.exe_success = false;
                                 net.layers.push_back(t_layer);
                             }
                         }
+                        else if(branch.name == "branch2"){
+                                if(exist_branch1){
+                                        t_layer.input_idx = -2;
+                                        t_layer.name = branch.name;
+                                }
+                                else{
+                                        t_layer.input_idx = -1;
+                                        t_layer.name = "chunk_and_branch2";
+                                }
+                                t_layer.layer = branch.value;
+                                t_layer.exe_success = false;
+                                net.layers.push_back(t_layer);
+                        }
                     }
                     if(exist_branch1){
-                        t_layer.from_idx = {-9, -1};
+                        t_layer.from_idx = {-2, -1};
 
                     }
                     else{
@@ -61,15 +62,15 @@ void get_submodule_shuffle(torch::jit::script::Module module, Net &net){
                     t_layer.input_idx = -1;
                     t_layer.name = "concat";
                     t_layer.layer = concat;
+                    t_layer.exe_success = false;
                     net.layers.push_back(t_layer);
                 }
         }else if(children.name.find("conv") != std::string::npos){
-                //for(auto seq : children.value.named_children()){
-                        t_layer.input_idx = -1;
-                        t_layer.name = children.name;
-                        t_layer.layer = children.value;
-                        net.layers.push_back(t_layer);
-                //}
+                t_layer.input_idx = -1;
+                t_layer.name = children.name;
+                t_layer.layer = children.value;
+                t_layer.exe_success = false;
+                net.layers.push_back(t_layer);
         }else{
                 get_submodule_shuffle(children.value,net); //fc
         }
@@ -96,7 +97,8 @@ void *predict_shuffle(Net *input){
 	for(i=0;i<input->layers.size();i++){
 		pthread_mutex_lock(&mutex_t[input->index_n]);
 		cond_i[input->index_n] = 1;
-		
+                input->layers[i].exe_success = false;
+
 		netlayer nl;// = (netlayer *)malloc(sizeof(netlayer));
 		nl.net = input;
 		nl.net->index = i;
@@ -122,16 +124,22 @@ void *predict_shuffle(Net *input){
 void forward_shuffle(th_arg *th){
         pthread_mutex_lock(&mutex_t[th->arg->net->index_n]);
 	netlayer *nl = th->arg;
-        at::Tensor out;
-	int k = nl->net->index;
         std::vector<torch::jit::IValue> inputs;
+        int k = nl->net->index;
+        int j;
         if(k==0) 
                 inputs = nl->net->input;
         else 
                 inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
-                
+        
+        if(nl->net->layers[k].name == "branch1"){
+		cond_i[nl->net->index_n]=0;
+		pthread_cond_signal(&cond_t[nl->net->index_n]);
+	}
         cout<<"k = "<<k<<"   "<<nl->net->layers[k].name<<"\n";
+        pthread_mutex_unlock(&mutex_t[nl->net->index_n]);
 
+        at::Tensor out;
         if(k == nl->net->layers.size()-1){  //mean
                 out = inputs[0].toTensor().mean({2,3});
                 inputs.clear();
@@ -149,8 +157,17 @@ void forward_shuffle(th_arg *th){
                 out = torch::cat(cat_input, 1);
                 out = channel_shuffle(out, 2);
 	}else{
+                //chunk_and_branch , branch1, branch2 , conv, maxpool
                 cout<<"else\n";
-                if(nl->net->layers[k].name == "chunk_and_branch2"){
+                if(nl->net->layers[k].name == "branch1"){
+                        j=1;
+                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                        cudaEventRecord(nl->net->record[0],0);
+                }else if(nl->net->layers[k].name == "branch2"){
+                        j=-1;
+                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                        cudaEventRecord(nl->net->record[1],0);
+                }else if(nl->net->layers[k].name == "chunk_and_branch2"){
                         nl->net->chunk = inputs[0].toTensor().chunk(2,1); //check
                         inputs.clear();
                         inputs.push_back(nl->net->chunk[1]);
@@ -158,12 +175,27 @@ void forward_shuffle(th_arg *th){
                 }else{
                         out = nl->net->layers[k].layer.forward(inputs).toTensor();
                 }
-                cout<<out.sizes()<<"\n";
         }
-        //cout<<"output size = "<<out.sizes()<<"\n\n\n";
-        nl->net->layers[k].output = out;
+        if(nl->net->layers[k].name == "branch1"){
+		cudaEventSynchronize(nl->net->record[0]);
+		nl->net->layers[k].output = out;
+		nl->net->layers[k].exe_success = true;
+	}
+	else if(nl->net->layers[k].name == "branch2"){
+		cudaEventSynchronize(nl->net->record[1]);
+		nl->net->layers[k].output = out;
+		nl->net->layers[k].exe_success = true;
+	}
+	else
+		nl->net->layers[k].output = out;
+
+        pthread_mutex_lock(&mutex_t[th->arg->net->index_n]);
+        cond_i[nl->net->index_n]=0;
+        if(nl->net->layers[k].name != "branch1" && nl->net->layers[k].name != "branch2"){
+		pthread_cond_signal(&cond_t[nl->net->index_n]);
+	}else if(nl->net->layers[k].exe_success && nl->net->layers[k+j].exe_success){
+		pthread_cond_signal(&cond_t[nl->net->index_n]);
+	}
         nl->net->index = k;
-	cond_i[nl->net->index_n]=0;
-	pthread_cond_signal(&cond_t[nl->net->index_n]);
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);
 }
