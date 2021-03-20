@@ -15,7 +15,7 @@ void get_submodule_resnet18(torch::jit::script::Module module, Net &net){
     string name;
     if(module.children().size() == 0){
         t_layer.layer = module;
-        t_layer.name = "";
+        t_layer.name = "normal";
         net.layers.push_back(t_layer);
         return;
     }
@@ -26,7 +26,7 @@ void get_submodule_resnet18(torch::jit::script::Module module, Net &net){
                 for(auto in_block_count : in_layer.value.children()) count++;
                 int i = 0;
                 name = "";
-                if(count > 6) {
+                if(count > 6) { //Bottleneck  7,8  if 8 downsample 
                     for(auto in_block : in_layer.value.named_children()){
                         if(i==6) {
                             i++;
@@ -84,7 +84,7 @@ void get_submodule_resnet18(torch::jit::script::Module module, Net &net){
 void *predict_resnet18(Net *input){
 	std::vector<torch::jit::IValue> inputs = input->input;
 	int i;
-    std::cout<<"resnet start\n";
+    //std::cout<<"resnet start\n";
 	for(i = 0;i<input->layers.size();i++) {
 		pthread_mutex_lock(&mutex_t[input->index_n]);
 		cond_i[input->index_n] = 1; //right?
@@ -120,6 +120,10 @@ void forward_resnet18(th_arg *th){
 	vector<torch::jit::IValue> inputs_cpy;
 	int k =nl->net->index;
 	at::Tensor out;
+    //if(k>=n_streams){
+		//at::cuda::CUDAStreamGuard guard(streams[(k%n_streams)]);
+		//at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
+	//}
 
     if(nl->net->layers[k].name.find("_first") != std::string::npos){
        identity = inputs[0].toTensor(); 

@@ -26,7 +26,7 @@ void get_submodule_alexnet(torch::jit::script::Module module, Net &net){
 void *predict_alexnet(Net *input){
 	std::vector<torch::jit::IValue> inputs = input->input;
 	int i;
-	std::cout<<input->layers.size()<<"\n";
+	//std::cout<<input->layers.size()<<"\n";
 	for(i=0;i<input->layers.size();i++){
 		pthread_mutex_lock(&mutex_t[input->index_n]);
 		cond_i[input->index_n] = 1;
@@ -39,9 +39,9 @@ void *predict_alexnet(Net *input){
 		th.arg = &nl;
 
 		//std::cout<<"index = "<<nl.index<<'\n';
-		std::cout << "Before thpool add work Alex "<< i << "\n";
+		//std::cout << "Before thpool add work Alex "<< i << "\n";
 		thpool_add_work(thpool,(void(*)(void *))forward_alexnet,&th);
-		std::cout << "After thpool add work Alex "<< i << "\n";
+		//std::cout << "After thpool add work Alex "<< i << "\n";
 		while (cond_i[input->index_n] == 1)
     	{
            	pthread_cond_wait(&cond_t[input->index_n], &mutex_t[input->index_n]);
@@ -59,8 +59,16 @@ void forward_alexnet(th_arg *th){
 	netlayer *nl = th->arg;
 	std::vector<torch::jit::IValue> inputs = nl->net->input;
 	int k = nl->net->index;
+	// if(k == 10)
+	// 	cudaSetDevice(1);
+	// else
+	// 	cudaSetDevice(0);
+	// inputs[0] = inputs[0].toTensor().to(at::kCUDA);
+	// std::cout<<"alex"<<nl->net->index_n<<"  k = "<<k<<inputs[0].toTensor().device()<<"\n";
 	at::Tensor out;
-	std::cout<<"k = "<<k<<"\n";
+	//std::cout<<"k = "<<k<<"\n";
+	
+	at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
 	if(k == nl->net->layers.size()-7){
 		out = inputs[0].toTensor().view({nl->net->layers[k-1].output.size(0), -1});
 		inputs.clear();
@@ -70,9 +78,7 @@ void forward_alexnet(th_arg *th){
 	else{
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
 	}
-	std::cout<<"before out\n";
 	nl->net->layers[k].output = out;
-	std::cout<<"after out\n";
 	cond_i[nl->net->index_n]=0;
 	pthread_cond_signal(&cond_t[nl->net->index_n]);
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);		

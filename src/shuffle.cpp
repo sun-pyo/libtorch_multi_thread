@@ -93,7 +93,7 @@ at::Tensor channel_shuffle(at::Tensor x, int groups){
 void *predict_shuffle(Net *input){
         std::vector<torch::jit::IValue> inputs = input->input;
 	int i;
-	std::cout<<"input layers size = "<<input->layers.size()<<"\n";
+	//std::cout<<"input layers size = "<<input->layers.size()<<"\n";
 	for(i=0;i<input->layers.size();i++){
 		pthread_mutex_lock(&mutex_t[input->index_n]);
 		cond_i[input->index_n] = 1;
@@ -110,9 +110,9 @@ void *predict_shuffle(Net *input){
 		thpool_add_work(thpool,(void(*)(void *))forward_shuffle,&th);
 		//std::cout << "After thpool add work Shuffle "<< i << "\n";
 		while (cond_i[input->index_n] == 1)
-    	{
-           	pthread_cond_wait(&cond_t[input->index_n], &mutex_t[input->index_n]);
-    	}
+    	        {
+           	        pthread_cond_wait(&cond_t[input->index_n], &mutex_t[input->index_n]);
+    	        }
 		input->input.clear();
 		input->input.push_back(input->layers[i].output);
 		pthread_mutex_unlock(&mutex_t[input->index_n]);
@@ -126,7 +126,9 @@ void forward_shuffle(th_arg *th){
 	netlayer *nl = th->arg;
         std::vector<torch::jit::IValue> inputs;
         int k = nl->net->index;
+        int n_all = nl->net->n_all;
         int j;
+        at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
         if(k==0) 
                 inputs = nl->net->input;
         else 
@@ -136,7 +138,7 @@ void forward_shuffle(th_arg *th){
 		cond_i[nl->net->index_n]=0;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}
-        cout<<"k = "<<k<<"   "<<nl->net->layers[k].name<<"\n";
+        //out<<"k = "<<k<<"   "<<nl->net->layers[k].name<<"\n";
         pthread_mutex_unlock(&mutex_t[nl->net->index_n]);
 
         at::Tensor out;
@@ -154,19 +156,27 @@ void forward_shuffle(th_arg *th){
                         else
                                 cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
                 }
+                //cout<<"concat = "<<nl->net->index_n<<"layer = "<<k<<"  "<<cat_input.size()<<"\n";
+                // for(int i=0;i<cat_input.size();i++){
+                //         cout<<cat_input[i].sizes()<<" ";
+                // }
+                //cout<<"\n";
                 out = torch::cat(cat_input, 1);
                 out = channel_shuffle(out, 2);
 	}else{
                 //chunk_and_branch , branch1, branch2 , conv, maxpool
-                cout<<"else\n";
                 if(nl->net->layers[k].name == "branch1"){
                         j=1;
+                        at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
+                        //cout<<"get branch1 "<<at::cuda::getCurrentCUDAStream(0)<<"\n";
                         out = nl->net->layers[k].layer.forward(inputs).toTensor();
-                        cudaEventRecord(nl->net->record[0],0);
+                        //cudaEventRecord(nl->net->record[0],0);
                 }else if(nl->net->layers[k].name == "branch2"){
                         j=-1;
+                        at::cuda::setCurrentCUDAStream(streams[(nl->net->n_all)+3]);
+                        //cout<<"get branch2 "<<at::cuda::getCurrentCUDAStream(0)<<"\n";
                         out = nl->net->layers[k].layer.forward(inputs).toTensor();
-                        cudaEventRecord(nl->net->record[1],0);
+                        //cudaEventRecord(nl->net->record[1],0);
                 }else if(nl->net->layers[k].name == "chunk_and_branch2"){
                         nl->net->chunk = inputs[0].toTensor().chunk(2,1); //check
                         inputs.clear();
@@ -177,12 +187,12 @@ void forward_shuffle(th_arg *th){
                 }
         }
         if(nl->net->layers[k].name == "branch1"){
-		cudaEventSynchronize(nl->net->record[0]);
+		//cudaEventSynchronize(nl->net->record[0]);
 		nl->net->layers[k].output = out;
 		nl->net->layers[k].exe_success = true;
 	}
 	else if(nl->net->layers[k].name == "branch2"){
-		cudaEventSynchronize(nl->net->record[1]);
+		//cudaEventSynchronize(nl->net->record[1]);
 		nl->net->layers[k].output = out;
 		nl->net->layers[k].exe_success = true;
 	}
@@ -190,12 +200,12 @@ void forward_shuffle(th_arg *th){
 		nl->net->layers[k].output = out;
 
         pthread_mutex_lock(&mutex_t[th->arg->net->index_n]);
-        cond_i[nl->net->index_n]=0;
         if(nl->net->layers[k].name != "branch1" && nl->net->layers[k].name != "branch2"){
+                cond_i[nl->net->index_n]=0;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}else if(nl->net->layers[k].exe_success && nl->net->layers[k+j].exe_success){
+                cond_i[nl->net->index_n]=0;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}
-        nl->net->index = k;
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);
 }

@@ -20,7 +20,7 @@ void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
         t_layer.layer = module;
 		t_layer.exe_success = false;
 		t_layer.input_idx = 0;
-		t_layer.name = "none";
+		t_layer.name = "normal";
         net.layers.push_back(t_layer);
         return;
     }
@@ -59,23 +59,22 @@ void get_submodule_squeeze(torch::jit::script::Module module, Net &net){
 void *predict_squeeze(Net *input){
 	std::vector<torch::jit::IValue> inputs = input->input;
 	int i;
-	std::cout<<"input layers size = "<<input->layers.size()<<"\n";
+	//std::cout<<"input layers size = "<<input->layers.size()<<"\n";
 	for(i=0;i<input->layers.size();i++){
 		pthread_mutex_lock(&mutex_t[input->index_n]);
 		cond_i[input->index_n] = 1;
-		
-		netlayer nl;// = (netlayer *)malloc(sizeof(netlayer));
+		input->layers[i].exe_success = false;
+
+		netlayer nl;
 		nl.net = input;
 		nl.net->index = i;
 
 		th_arg th;
 		th.arg = &nl;
 
-		input->layers[i].exe_success = false;
-
-		std::cout << "Before thpool add work Squeeze "<< i << "\n";
+		//std::cout << "Before thpool add work Squeeze "<< i << "\n";
 		thpool_add_work(thpool,(void(*)(void *))forward_squeeze,&th);
-		std::cout << "After thpool add work Squeeze "<< i << "\n";
+		//std::cout << "After thpool add work Squeeze "<< i << "\n";
 		while (cond_i[input->index_n] == 1)
     	{
            	pthread_cond_wait(&cond_t[input->index_n], &mutex_t[input->index_n]);
@@ -93,7 +92,9 @@ void forward_squeeze(th_arg *th){
 	netlayer *nl = th->arg;
 	std::vector<torch::jit::IValue> inputs;
 	int k = nl->net->index;
+	int n_all = nl->net->n_all;
 	int j;
+	at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
 	if(nl->net->layers[k].name == "expand3x3"){
 		inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
 	}
@@ -105,33 +106,31 @@ void forward_squeeze(th_arg *th){
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);  
-	at::Tensor out;
-	std::cout<<"k = "<<k<<"\n";
 	
-
+	at::Tensor out;
+	//std::cout<<"k = "<<k<<"\n";
+	
 	if(k == nl->net->layers.size()-1){
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
 		out = out.view({out.size(0), -1});
 	}
 	else if(nl->net->layers[k].name == "concat"){
-		cout<<"\n cat \n";
 		out = torch::cat({nl->net->layers[k-2].output, nl->net->layers[k-1].output}, 1);
 	}
 	else if(nl->net->layers[k].name != "none"){
 		if(nl->net->layers[k].name == "expand1x1"){
 			j=1;
-			cout<<"expand1x1  out\n";
+			at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
 			out = nl->net->layers[k].layer.forward(inputs).toTensor();
 			out = torch::relu(out);
 			cudaEventRecord(nl->net->record[0],0);
 		}
 		else if(nl->net->layers[k].name == "expand3x3"){
 			j=-1;
-			cout<<"expand3x3 out\n";
+			at::cuda::setCurrentCUDAStream(streams[(nl->net->n_all+2)]);
 			out = nl->net->layers[k].layer.forward(inputs).toTensor();
 			out = torch::relu(out);
 			cudaEventRecord(nl->net->record[1],0);
-			cout<<"expand3x3 record\n";
 		}
 		else{
 			out = nl->net->layers[k].layer.forward(inputs).toTensor();
@@ -141,9 +140,6 @@ void forward_squeeze(th_arg *th){
 	else{
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
 	}
-
-
-	std::cout<<"before out\n";
 
 	if(nl->net->layers[k].name == "expand1x1"){
 		cudaEventSynchronize(nl->net->record[0]);
@@ -158,23 +154,14 @@ void forward_squeeze(th_arg *th){
 	else
 		nl->net->layers[k].output = out;
 
-
-	
-	std::cout<<"after out\n";
 	pthread_mutex_lock(&mutex_t[th->arg->net->index_n]);
-	cond_i[nl->net->index_n]=0;
 	if(nl->net->layers[k].name != "expand1x1" && nl->net->layers[k].name != "expand3x3"){
+		cond_i[nl->net->index_n]=0;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}else if(nl->net->layers[k].exe_success && nl->net->layers[k+j].exe_success){
+		cond_i[nl->net->index_n]=0;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}
-	/*
-	else if(nl->net->layers[k].name == "expand3x3" && nl->net->layers[k-1].flag){
-		nl->net->layers[k-1].flag = false;
-		nl->net->layers[k].flag = false;
-		pthread_cond_signal(&cond_t[nl->net->index_n]);
-	}*/
-
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);		
 }
 

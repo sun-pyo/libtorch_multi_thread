@@ -307,14 +307,14 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
 }
 
 
-void *predict_inception(Net *input){
+void *predict_inception(Net *inception){
 	
 	int i;
-	std::cout<<"num layer"<<input->layers.size()<<"\n"; 
+	//std::cout<<"num layer"<<input->layers.size()<<"\n"; 
     
-    auto x_ch0 = torch::unsqueeze(input->input[0].toTensor().index({torch::indexing::Slice(), 0}), 1) * (0.229 / 0.5) + (0.485 - 0.5) / 0.5;
-    auto x_ch1 = torch::unsqueeze(input->input[0].toTensor().index({torch::indexing::Slice(), 1}), 1) * (0.224 / 0.5) + (0.456 - 0.5) / 0.5;
-    auto x_ch2 = torch::unsqueeze(input->input[0].toTensor().index({torch::indexing::Slice(), 2}), 1) * (0.225 / 0.5) + (0.406 - 0.5) / 0.5;
+    auto x_ch0 = torch::unsqueeze(inception->input[0].toTensor().index({torch::indexing::Slice(), 0}), 1) * (0.229 / 0.5) + (0.485 - 0.5) / 0.5;
+    auto x_ch1 = torch::unsqueeze(inception->input[0].toTensor().index({torch::indexing::Slice(), 1}), 1) * (0.224 / 0.5) + (0.456 - 0.5) / 0.5;
+    auto x_ch2 = torch::unsqueeze(inception->input[0].toTensor().index({torch::indexing::Slice(), 2}), 1) * (0.225 / 0.5) + (0.406 - 0.5) / 0.5;
     
     x_ch0.to(at::kCUDA);
     x_ch1.to(at::kCUDA);
@@ -322,41 +322,45 @@ void *predict_inception(Net *input){
 
     auto x_cat = torch::cat({x_ch0,x_ch1,x_ch2},1).to(at::kCUDA);
 
-    input->input[0] = x_cat;
+    inception->input[0] = x_cat;
 
-	for(i=0;i<input->layers.size();i++){
-		pthread_mutex_lock(&mutex_t[input->index_n]);
-		cond_i[input->index_n] = 1;
-		input->layers[i].exe_success = false;
+	for(i=0;i<inception->layers.size();i++){
+		pthread_mutex_lock(&mutex_t[inception->index_n]);
+		cond_i[inception->index_n] = 1;
+		inception->layers[i].exe_success = false;
 
 		netlayer nl;
-		nl.net = input;
+		nl.net = inception;
 		nl.net->index = i;
 
 		th_arg th;
 		th.arg = &nl;
 
-		std::cout << "Before thpool add work inception "<< i << "\n";
+		//std::cout << "Before thpool add work inception "<< i << "\n";
 		thpool_add_work(thpool,(void(*)(void *))forward_inception,&th);
-		std::cout << "After thpool add work inception "<< i << "\n";
-		while (cond_i[input->index_n] == 1)
+		//std::cout << "After thpool add work inception "<< i << "\n";
+		while (cond_i[inception->index_n] == 1)
     	{
-           	pthread_cond_wait(&cond_t[input->index_n], &mutex_t[input->index_n]);
+           	pthread_cond_wait(&cond_t[inception->index_n], &mutex_t[inception->index_n]);
     	}
         i = nl.net->index;
-		input->input.clear();
-		input->input.push_back(input->layers[i].output);
-		pthread_mutex_unlock(&mutex_t[input->index_n]);
+		inception->input.clear();
+		inception->input.push_back(inception->layers[i].output);
+		pthread_mutex_unlock(&mutex_t[inception->index_n]);
 	}
-	std::cout << "\n*****inception result*****" << "\n";
-	std::cout << (input->layers[i-1].output).slice(/*dim=*/1, /*start=*/0, /*end=*/15) << "\n";
+	std::cout << "\n*****"<<inception->name<<"*****" << "\n";
+	std::cout << (inception->layers[i-1].output).slice(/*dim=*/1, /*start=*/0, /*end=*/15) << "\n";
 	}
 
 void forward_inception(th_arg *th){
+    //cout<<"forward"<<th->arg->net->index_n<<"\n";
 	pthread_mutex_lock(&mutex_t[th->arg->net->index_n]);
 	netlayer *nl = th->arg;
 	int k = nl->net->index;
+    int n_all = nl->net->n_all;
     std::vector<torch::jit::IValue> inputs;
+    std::vector<int> stream_id = {nl->net->index_n, nl->net->n_all+1, nl->net->n_all+2,nl->net->n_all+3};
+    at::cuda::setCurrentCUDAStream(streams[stream_id[0]]);
     if(nl->net->layers[k].input_idx != 0){
         inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
     }
@@ -385,6 +389,7 @@ void forward_inception(th_arg *th){
             // else if(k>=97 && k <= 100){
             //     std::this_thread::sleep_for(std::chrono::duration<int>(2));
             // }
+            at::cuda::setCurrentCUDAStream(streams[stream_id[t%4]]);
             if(nl->net->layers[k].input_idx != 0){
                 inputs.clear();
                 inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
@@ -432,8 +437,7 @@ void forward_inception(th_arg *th){
 		nl->net->layers[k].output = out;
 		nl->net->layers[k].exe_success = true;
 	}
-    nl->net->layers[k].output = out;
-
+    nl->net->layers[k].output = out.to(at::kCUDA);
 
     pthread_mutex_lock(&mutex_t[nl->net->index_n]);
 

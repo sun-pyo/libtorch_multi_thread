@@ -34,6 +34,14 @@ void get_submodule_MNASNet(torch::jit::script::Module module, Net &net){
 							t_layer.name = "";
         					net.layers.push_back(t_layer);
 						}
+						/*
+						_InvertedResidual
+						def forward(self, input):
+							if self.apply_residual:
+								return self.layers(input) + input
+							else:
+								return self.layers(input)
+						*/
 						if(ch3.name != "0"){
 							t_layer.layer = dummy;
 							t_layer.name = "Residual";
@@ -58,7 +66,7 @@ void get_submodule_MNASNet(torch::jit::script::Module module, Net &net){
 void *predict_MNASNet(Net *input){
 	std::vector<torch::jit::IValue> inputs = input->input;
 	int i;
-	std::cout<<input->layers.size()<<"\n";
+	//std::cout<<input->layers.size()<<"\n";
 	for(i=0;i<input->layers.size();i++){
 		pthread_mutex_lock(&mutex_t[input->index_n]);
 		cond_i[input->index_n] = 1;
@@ -71,9 +79,9 @@ void *predict_MNASNet(Net *input){
 		th.arg = &nl;
 
 		//std::cout<<"index = "<<nl.index<<'\n';
-		std::cout << "Before thpool add work MNASNet "<< i << "\n";
+		//std::cout << "Before thpool add work MNASNet "<< i << "\n";
 		thpool_add_work(thpool,(void(*)(void *))forward_MNASNet,&th);
-		std::cout << "After thpool add work MNASNet "<< i << "\n";
+		//std::cout << "After thpool add work MNASNet "<< i << "\n";
 		while (cond_i[input->index_n] == 1)
     	{
            	pthread_cond_wait(&cond_t[input->index_n], &mutex_t[input->index_n]);
@@ -92,24 +100,25 @@ void forward_MNASNet(th_arg *th){
 	std::vector<torch::jit::IValue> inputs = nl->net->input;
 	int k = nl->net->index;
 	at::Tensor out;
-	std::cout<<"k = "<<k<<" "<<nl->net->layers[k].name<<"\n";
+	//std::cout<<"k = "<<k<<" "<<nl->net->layers[k].name<<"\n";
+	at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
 	if(k == nl->net->layers.size()-2){
 		out = inputs[0].toTensor().mean({2,3});
 	}
 	else if(nl->net->layers[k].name == "Residual"){
 		out = nl->net->layers[k + nl->net->layers[k].from_idx[0]].output;
-		std::cout<<"size = "<<nl->net->layers[k].from_idx.size()<<"\n";
+		//std::cout<<"size = "<<nl->net->layers[k].from_idx.size()<<"\n";
 		for(int i=1;i<nl->net->layers[k].from_idx.size();i++){
-			std::cout<<"\n\nidx and = "<<k<<" "<<nl->net->layers[k].from_idx[i]<<"\n";
+			//std::cout<<"\n\nidx and = "<<k<<" "<<nl->net->layers[k].from_idx[i]<<"\n";
 			out += nl->net->layers[k + nl->net->layers[k].from_idx[i]].output;
 		}
 	}
 	else{
 		out = nl->net->layers[k].layer.forward(inputs).toTensor();
 	}
-	std::cout<<"before out\n";
+	//std::cout<<"before out\n";
 	nl->net->layers[k].output = out;
-	std::cout<<"after out\n";
+	//std::cout<<"after out\n";
 	cond_i[nl->net->index_n]=0;
 	pthread_cond_signal(&cond_t[nl->net->index_n]);
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]);		

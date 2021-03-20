@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <torch/torch.h>
+#include <string>
 #include <functional>
 #include "cuda_runtime.h"
 
@@ -14,8 +15,11 @@ typedef struct _layer
 	std::string name;
 	torch::jit::Module layer;
 	bool exe_success;
-	std::vector<int> from_idx;
+	std::vector<int> from_idx; //concat
+	std::vector<int> branch_idx; // last layer idx of branch for eventrecord
 	int input_idx;
+	int event_idx;
+	int skip; //inception wait skip num
 }Layer;
 
 typedef struct _net
@@ -24,8 +28,12 @@ typedef struct _net
 	std::vector<torch::jit::IValue> input;
 	at::Tensor identity;
 	std::vector<cudaEvent_t> record;
+	std::vector<at::Tensor> chunk; //shuffle
+	string name;
 	int index; //layer index
 	int index_n; //network
+	int n_all; // all network num
+	int flatten;
 }Net;
 
 typedef struct _netlayer

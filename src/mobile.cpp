@@ -37,7 +37,7 @@ void get_submodule_mobilenet(torch::jit::script::Module module, Net &net){
 void *predict_mobilenet(Net *input){
 	std::vector<torch::jit::IValue> inputs = input->input;
 	int i;
-	std::cout<<input->layers.size()<<"\n";
+	//std::cout<<input->layers.size()<<"\n";
 	for(i=0;i<input->layers.size();i++){
 		pthread_mutex_lock(&mutex_t[input->index_n]);
 		cond_i[input->index_n] = 1;
@@ -71,6 +71,7 @@ void forward_mobilenet(th_arg *th){
 	int k = nl->net->index;
 	at::Tensor out;
 	//std::cout<<"k = "<<k<<"\n";
+	at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
 	if(nl->net->layers[k].name == "first_use_res_connect"){
 		nl->net->identity = inputs[0].toTensor();
 	}

@@ -7,6 +7,11 @@
 #include <memory>
 #include <stdlib.h>
 #include <pthread.h>
+#include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAFunctions.h>
 
 #include "test.h"
 #include "alex.h"
@@ -15,17 +20,24 @@
 #include "densenet.h"
 #include "squeeze.h"
 #include "mobile.h"
+#include "mnasnet.h"
+#include "inception.h"
+#include "shuffle.h"
 
 #define n_dense 0
 #define n_res 0
-#define n_alex 0
+#define n_alex 1
 #define n_vgg 0
 #define n_wide 0
-#define n_squeeze 1
+#define n_squeeze 0
 #define n_mobile 0
+#define n_mnasnet 0
+#define n_inception 0
+#define n_shuffle 0
+#define n_resX 0
 
+#define n_threads 1
 
-#define n_threads 3
 
 extern void *predict_alexnet(Net *input);
 extern void *predict_vgg(Net *input);
@@ -33,6 +45,9 @@ extern void *predict_resnet18(Net *input);
 extern void *predict_densenet(Net *input);
 extern void *predict_squeeze(Net *input);
 extern void *predict_mobilenet(Net *input);
+extern void *predict_MNASNet(Net *input);
+extern void *predict_inception(Net *input);
+extern void *predict_shuffle(Net *input);
 
 namespace F = torch::nn::functional;
 using namespace std;
@@ -58,13 +73,25 @@ threadpool thpool;
 pthread_cond_t* cond_t;
 pthread_mutex_t* mutex_t;
 int* cond_i;
+std::vector<at::cuda::CUDAStream> streams;
 
 int main(int argc, const char* argv[]) {
+  // static constexpr int kStreamsPerPoolBits = 5;
+  // static constexpr int kStreamsPerPool = 1 << kStreamsPerPoolBits;
+  // for (auto i = decltype(kStreamsPerPool){0}; i < kStreamsPerPool; ++i) {
+  //   cout<<"i = "<<i<<"\n";
+  // }
 
-  int n_all = n_alex + n_vgg + n_res + n_dense + n_wide + n_squeeze + n_mobile;
+  int n_all = n_alex + n_vgg + n_res + n_dense + n_wide + n_squeeze + n_mobile + n_mnasnet + n_inception + n_shuffle + n_resX;
 
   thpool = thpool_init(n_threads);
 
+  for(int i=0; i<n_all+4; i++){
+    //cout<< "Make stream\n";
+    streams.push_back(at::cuda::getStreamFromPool(false,0));
+    //at::cuda::CUDAMultiStreamGuard multi_guard(streams);
+    //cout<<"stream id = "<<streams[0].unwrap().id()<<"\n";
+  }
   torch::jit::script::Module denseModule[n_dense];
   torch::jit::script::Module resModule[n_res];
   torch::jit::script::Module alexModule[n_alex];
@@ -72,34 +99,76 @@ int main(int argc, const char* argv[]) {
   torch::jit::script::Module wideModule[n_wide];
   torch::jit::script::Module squeezeModule[n_squeeze];
   torch::jit::script::Module mobileModule[n_mobile];
+  torch::jit::script::Module mnasModule[n_mnasnet];
+  torch::jit::script::Module inceptionModule[n_inception];
+  torch::jit::script::Module shuffleModule[n_shuffle];
+  torch::jit::script::Module resXModule[n_resX];
   try {
-    for (int i=0;i<n_dense;i++){    
+    for (int i=0;i<n_dense;i++){
+      cout<<"Dens model loading ";
     	denseModule[i] = torch::jit::load("../densenet_model.pt");
       denseModule[i].to(at::kCUDA);
+      cout<<"end\n";
     }
-    for (int i=0;i<n_res;i++){    
+    for (int i=0;i<n_res;i++){
+      cout<<"Res model loading ";  
     	resModule[i] = torch::jit::load("../resnet_model.pt");
       resModule[i].to(at::kCUDA);
+      cout<<"end\n";
     }
     for(int i=0;i<n_alex;i++){
+      cout<<"Alex model loading "; 
     	alexModule[i] = torch::jit::load("../alexnet_model.pt");
       alexModule[i].to(at::kCUDA);
+      cout<<"end\n";
     }
-    for (int i=0;i<n_vgg;i++){    
+    for (int i=0;i<n_vgg;i++){
+      cout<<"VGG model loading "; 
     	vggModule[i] = torch::jit::load("../vgg_model.pt");
       vggModule[i].to(at::kCUDA);
+      cout<<"end\n";
     }
-    for (int i=0;i<n_wide;i++){    
+    for (int i=0;i<n_wide;i++){
+      cout<<"Wide Res model loading "; 
     	wideModule[i] = torch::jit::load("../wideresnet_model.pt");
       wideModule[i].to(at::kCUDA);
+      cout<<"end\n";
     }
-    for (int i=0;i<n_squeeze;i++){    
+    for (int i=0;i<n_squeeze;i++){
+      cout<<"Squeeze model loading "; 
     	squeezeModule[i] = torch::jit::load("../squeeze_model.pt");
       squeezeModule[i].to(at::kCUDA);
+      cout<<"end\n";
     }
-    for (int i=0;i<n_mobile;i++){    
+    for (int i=0;i<n_mobile;i++){
+      cout<<"Mobile model loading "; 
     	mobileModule[i] = torch::jit::load("../mobilenet_model.pt");
       mobileModule[i].to(at::kCUDA);
+      cout<<"end\n";
+    }
+    for (int i=0;i<n_mnasnet;i++){
+      cout<<"MNAS model loading "; 
+    	mnasModule[i] = torch::jit::load("../mnasnet_model.pt");
+      mnasModule[i].to(at::kCUDA);
+      cout<<"end\n";
+    }
+    for (int i=0;i<n_inception;i++){
+      cout<<"Inception model loading "; 
+    	inceptionModule[i] = torch::jit::load("../inception_model.pt");
+      inceptionModule[i].to(at::kCUDA);
+      cout<<"end\n";
+    }
+    for (int i=0;i<n_shuffle;i++){
+      cout<<"Shuffle model loading "; 
+    	shuffleModule[i] = torch::jit::load("../shuffle_model.pt");
+      shuffleModule[i].to(at::kCUDA);
+      cout<<"end\n";
+    }
+    for (int i=0;i<n_resX;i++){
+      cout<<"ResNext model loading "; 
+    	resXModule[i] = torch::jit::load("../resnext_model.pt");
+      resXModule[i].to(at::kCUDA);
+      cout<<"end\n";
     }
   }
   catch (const c10::Error& e) {
@@ -121,10 +190,14 @@ int main(int argc, const char* argv[]) {
 
 
   vector<torch::jit::IValue> inputs;
+  vector<torch::jit::IValue> inputs2;
   //module.to(at::kCPU);
    
   torch::Tensor x = torch::ones({1, 3, 224, 224}).to(at::kCUDA);
+  torch::Tensor x2 = torch::ones({1, 3, 299, 299}).to(at::kCUDA);
   inputs.push_back(x);
+  inputs2.push_back(x2);
+  
   
   Net net_input_dense[n_dense];
   Net net_input_res[n_res];
@@ -133,6 +206,10 @@ int main(int argc, const char* argv[]) {
   Net net_input_wide[n_wide];
   Net net_input_squeeze[n_squeeze];
   Net net_input_mobile[n_mobile];
+  Net net_input_mnasnet[n_mnasnet];
+  Net net_input_inception[n_inception];
+  Net net_input_shuffle[n_shuffle];
+   Net net_input_resX[n_resX];
 
   pthread_t networkArray_dense[n_dense];
   pthread_t networkArray_res[n_res];
@@ -141,6 +218,10 @@ int main(int argc, const char* argv[]) {
   pthread_t networkArray_wide[n_wide];
   pthread_t networkArray_squeeze[n_squeeze];
   pthread_t networkArray_mobile[n_mobile];
+  pthread_t networkArray_mnasnet[n_mnasnet];
+  pthread_t networkArray_inception[n_inception];
+  pthread_t networkArray_shuffle[n_shuffle];
+  pthread_t networkArray_resX[n_resX];
 
   for(int i=0;i<n_dense;i++){
 	  get_submodule_densenet(denseModule[i], net_input_dense[i]);
@@ -167,6 +248,8 @@ int main(int argc, const char* argv[]) {
 	  get_submodule_vgg(vggModule[i], net_input_vgg[i]);
     std::cout << "End get submodule_vgg " << i << "\n";
 	  net_input_vgg[i].input = inputs;
+    net_input_vgg[i].flatten = 32;
+    net_input_vgg[i].name = "VGG";
     net_input_vgg[i].index_n = i + n_alex + n_res + n_dense;
   }
 
@@ -185,19 +268,56 @@ int main(int argc, const char* argv[]) {
       cudaEventCreate(&event_temp);
       net_input_squeeze[i].record.push_back(event_temp);
     }
+    net_input_squeeze[i].n_all = n_all;
 	  net_input_squeeze[i].input = inputs;
     net_input_squeeze[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide;
   }
 
   for(int i=0;i<n_mobile;i++){
 	  get_submodule_mobilenet(mobileModule[i], net_input_mobile[i]);
-    std::cout << "End get submodule_widenet "<< i << "\n";
+    std::cout << "End get submodule_mobilenet "<< i << "\n";
 	  net_input_mobile[i].input = inputs;
     net_input_mobile[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze;
   }
 
+  for(int i=0;i<n_mnasnet;i++){
+	  get_submodule_MNASNet(mnasModule[i], net_input_mnasnet[i]);
+    std::cout << "End get submodule_mnasnet "<< i << "\n";
+	  net_input_mnasnet[i].input = inputs;
+    net_input_mnasnet[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile;
+  }
+  for(int i=0;i<n_inception;i++){
+	  get_submodule_inception(inceptionModule[i], net_input_inception[i]);
+    std::cout << "End get submodule_inception "<< i << "\n";
+    for(int j=0;j<4;j++){
+      cudaEvent_t event_temp;
+      cudaEventCreate(&event_temp);
+      net_input_inception[i].record.push_back(event_temp);
+    }
+    net_input_inception[i].n_all = n_all;
+	  net_input_inception[i].input = inputs2;
+    net_input_inception[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile + n_mnasnet;
+  }
+  for(int i=0;i<n_shuffle;i++){
+	  get_submodule_shuffle(shuffleModule[i], net_input_shuffle[i]);
+    std::cout << "End get submodule_shuffle "<< i << "\n";
+    for(int j=0;j<2;j++){
+      cudaEvent_t event_temp;
+      cudaEventCreate(&event_temp);
+      net_input_shuffle[i].record.push_back(event_temp);
+    }
+    net_input_shuffle[i].n_all = n_all;
+	  net_input_shuffle[i].input = inputs;
+    net_input_shuffle[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile + n_mnasnet + n_inception;
+  }
+  for(int i=0;i<n_resX;i++){
+	  get_submodule_resnet18(resXModule[i], net_input_resX[i]);
+    std::cout << "End get submodule_resnext "<< i << "\n";
+	  net_input_resX[i].input = inputs;
+    net_input_resX[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile + n_mnasnet + n_inception + n_shuffle;
+  }
+
 for(int i=0;i<n_dense;i++){
-  cout<<"dfdfewewfwe\n";
     if (pthread_create(&networkArray_dense[i], NULL, (void *(*)(void*))predict_densenet, &net_input_dense[i]) < 0){
       perror("thread error");
       exit(0);
@@ -242,6 +362,32 @@ for(int i=0;i<n_dense;i++){
     }
   }
 
+  for(int i=0;i<n_mnasnet;i++){
+    if (pthread_create(&networkArray_mnasnet[i], NULL, (void *(*)(void*))predict_MNASNet, &net_input_mnasnet[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
+
+  for(int i=0;i<n_inception;i++){
+    if (pthread_create(&networkArray_inception[i], NULL, (void *(*)(void*))predict_inception, &net_input_inception[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
+  for(int i=0;i<n_shuffle;i++){
+    if (pthread_create(&networkArray_shuffle[i], NULL, (void *(*)(void*))predict_shuffle, &net_input_shuffle[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
+  for(int i=0;i<n_resX;i++){
+    if (pthread_create(&networkArray_resX[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_resX[i]) < 0){
+      perror("thread error");
+      exit(0);
+    }
+  }
+
   for (int i = 0; i < n_dense; i++){
     pthread_join(networkArray_dense[i], NULL);
   }
@@ -263,6 +409,19 @@ for(int i=0;i<n_dense;i++){
   for (int i = 0; i < n_mobile; i++){
     pthread_join(networkArray_mobile[i], NULL);
   }
+  for (int i = 0; i < n_mnasnet; i++){
+    pthread_join(networkArray_mnasnet[i], NULL);
+  }
+  for (int i = 0; i < n_inception; i++){
+    pthread_join(networkArray_inception[i], NULL);
+  }
+  for (int i = 0; i < n_shuffle; i++){
+    pthread_join(networkArray_shuffle[i], NULL);
+  }
+  for (int i = 0; i < n_resX; i++){
+    pthread_join(networkArray_resX[i], NULL);
+  }
+  //at::cuda::device_synchronize();
   free(cond_t);
   free(mutex_t);
   free(cond_i);
