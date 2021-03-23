@@ -11,7 +11,7 @@
 #include <pthread.h>
 #include "thpool.h"
 
-//#define n_streams 2
+#define n_streamPerPool 32
 
 extern threadpool thpool; 
 extern pthread_cond_t *cond_t;

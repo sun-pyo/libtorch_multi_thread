@@ -9,6 +9,15 @@
 #include <unistd.h>
 #include "inception.h"
 
+/*
+
+event_idx : branch_num in inception (for recording event)
+input_idx : the index of the input from the current layer
+skip : Number of layer modules in one branch (How many more signals do thread have to send)
+branch_idx : The last layer index of the branch to determine if the operation is complete(exe_success)
+
+*/
+
 namespace F = torch::nn::functional;
 using namespace std;
 
@@ -16,7 +25,7 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
     Layer t_layer;    
     Dummy temp;
     for(auto children : module.named_children()){
-        if(children.name == "Mixed_5b" || children.name == "Mixed_5c" || children.name == "Mixed_5d"){
+        if(children.name == "Mixed_5b" || children.name == "Mixed_5c" || children.name == "Mixed_5d"){ //InceptionA
             int event_idx = -1;
             for(auto branch : children.value.named_children()){
                 if(branch.name == "branch_pool"){
@@ -76,7 +85,7 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
             net.layers.push_back(t_layer);
             continue;
         }
-        else if(children.name == "Mixed_6a"){
+        else if(children.name == "Mixed_6a"){   //InceptionB
             int event_idx = -1;
             for(auto branch : children.value.named_children()){
                 if(branch.name == "branch3x3"){
@@ -124,7 +133,7 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
             net.layers.push_back(t_layer);
             continue;
         }
-        else if(children.name == "Mixed_6b" || children.name == "Mixed_6c" || children.name == "Mixed_6d" || children.name == "Mixed_6e" ){
+        else if(children.name == "Mixed_6b" || children.name == "Mixed_6c" || children.name == "Mixed_6d" || children.name == "Mixed_6e" ){ //InceptionC
             int event_idx = -1;
             for(auto branch : children.value.named_children()){
                 if(branch.name == "branch_pool"){
@@ -174,7 +183,6 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
                 t_layer.name = "C_" + branch.name;
                 net.layers.push_back(t_layer);
             }
-            //t_layer.num_event = event_idx+1;
             t_layer.event_idx = -1;
             t_layer.from_idx = {-11,-8,-3, -1};
             t_layer.layer = temp;
@@ -184,7 +192,7 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
             net.layers.push_back(t_layer);
             continue;
         }
-        else if(children.name == "Mixed_7a"){
+        else if(children.name == "Mixed_7a"){   //InceptionD
             int event_idx = -1;
             for(auto branch : children.value.named_children()){
                 t_layer.skip = 0;
@@ -221,7 +229,6 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
                     net.layers.push_back(t_layer);
                 }
             }
-            //t_layer.num_event = event_idx+1;
             t_layer.event_idx = -1;
             t_layer.from_idx = {-6,-2, -1};
             t_layer.layer = temp;
@@ -231,7 +238,7 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
             net.layers.push_back(t_layer);
             continue;
         }
-        else if(children.name == "Mixed_7b" || children.name == "Mixed_7c"){
+        else if(children.name == "Mixed_7b" || children.name == "Mixed_7c"){    //InceptionE
             int event_idx = -1;
             for(auto branch : children.value.named_children()){
                 t_layer.skip = 0;
@@ -282,8 +289,7 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
                     net.layers.push_back(t_layer);
                 }
             }
-            //t_layer.num_event = event_idx+1;
-            t_layer.skip = false;
+            t_layer.skip = 0;
             t_layer.input_idx = 0;
             t_layer.from_idx = {-12,-8,-3, -1};
             t_layer.layer = temp;
@@ -310,7 +316,6 @@ void get_submodule_inception(torch::jit::script::Module module, Net &net){
 void *predict_inception(Net *inception){
 	
 	int i;
-	//std::cout<<"num layer"<<input->layers.size()<<"\n"; 
     
     auto x_ch0 = torch::unsqueeze(inception->input[0].toTensor().index({torch::indexing::Slice(), 0}), 1) * (0.229 / 0.5) + (0.485 - 0.5) / 0.5;
     auto x_ch1 = torch::unsqueeze(inception->input[0].toTensor().index({torch::indexing::Slice(), 1}), 1) * (0.224 / 0.5) + (0.456 - 0.5) / 0.5;
@@ -336,10 +341,10 @@ void *predict_inception(Net *inception){
 		th_arg th;
 		th.arg = &nl;
 
-		//std::cout << "Before thpool add work inception "<< i << "\n";
 		thpool_add_work(thpool,(void(*)(void *))forward_inception,&th);
-		//std::cout << "After thpool add work inception "<< i << "\n";
-		while (cond_i[inception->index_n] == 1)
+        std::cout << "After thpool add work inception "<< i << "\n";
+		
+        while (cond_i[inception->index_n] == 1)
     	{
            	pthread_cond_wait(&cond_t[inception->index_n], &mutex_t[inception->index_n]);
     	}
@@ -353,91 +358,90 @@ void *predict_inception(Net *inception){
 	}
 
 void forward_inception(th_arg *th){
-    //cout<<"forward"<<th->arg->net->index_n<<"\n";
 	pthread_mutex_lock(&mutex_t[th->arg->net->index_n]);
 	netlayer *nl = th->arg;
 	int k = nl->net->index;
     int n_all = nl->net->n_all;
     std::vector<torch::jit::IValue> inputs;
-    std::vector<int> stream_id = {nl->net->index_n, nl->net->n_all+1, nl->net->n_all+2,nl->net->n_all+3};
-    at::cuda::setCurrentCUDAStream(streams[stream_id[0]]);
+    std::vector<int> stream_id = {nl->net->index_n, n_streamPerPool-1, n_streamPerPool-2,n_streamPerPool-3};
+    //at::cuda::setCurrentCUDAStream(streams[stream_id[0]]);
     if(nl->net->layers[k].input_idx != 0){
         inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
     }
     else {
         inputs = nl->net->input;
     }
-    if(nl->net->layers[k + nl->net->layers[k].skip].skip > 0){ // +1 why? not predict for loop 
+    if(nl->net->layers[k + nl->net->layers[k].skip].skip > 0){ // +1 why? predict for loop 
         nl->net->index = k + nl->net->layers[k].skip - 1;
         cond_i[nl->net->index_n]=0;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}
 	pthread_mutex_unlock(&mutex_t[nl->net->index_n]); 
 	at::Tensor out;
-	if(k == nl->net->layers.size()-2){
-		out = inputs[0].toTensor().view({inputs[0].toTensor().size(0), -1});
-		inputs.clear();
-		inputs.push_back(out);
-		out = nl->net->layers[k].layer.forward(inputs).toTensor();
-	}
-    else if(nl->net->layers[k].skip > 0){
-        out = inputs[0].toTensor();
-        int T = nl->net->layers[k].skip;
-        for(int t=0;t<T;k++,t++){
-            // if(k >= 101 && k<=105) // k == 96 || k == 97 || k== 101 101 106
-            //     std::this_thread::sleep_for(std::chrono::duration<int>(60));
-            // else if(k>=97 && k <= 100){
-            //     std::this_thread::sleep_for(std::chrono::duration<int>(2));
-            // }
-            at::cuda::setCurrentCUDAStream(streams[stream_id[t%4]]);
-            if(nl->net->layers[k].input_idx != 0){
-                inputs.clear();
-                inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
-            }
-            else {
-                inputs.clear();
-                inputs.push_back(out);
-            } 
-            
-            if(nl->net->layers[k].name == "concat"){
-                std::vector<at::Tensor> cat_input;
-                for(int i=0;i<nl->net->layers[k].from_idx.size();i++){
-                    cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
+    {
+        at::cuda::CUDAStreamGuard guard(streams[stream_id[0]]);
+        if(k == nl->net->flatten){
+            out = inputs[0].toTensor().view({inputs[0].toTensor().size(0), -1});
+            inputs.clear();
+            inputs.push_back(out);
+            out = nl->net->layers[k].layer.forward(inputs).toTensor();
+        }
+        else if(nl->net->layers[k].skip > 0){   //branch
+            //at::cuda::setCurrentCUDAStream(streams[stream_id[(nl->net->layers[k].event_idx)%4]]);
+            {
+                at::cuda::CUDAStreamGuard guard(streams[stream_id[(nl->net->layers[k].event_idx)%4]]); //event_idx == branch_num
+                out = inputs[0].toTensor();
+                int T = nl->net->layers[k].skip;
+                for(int t=0;t<T;k++,t++){
+                    if(nl->net->layers[k].input_idx != 0){
+                        inputs.clear();
+                        inputs.push_back(nl->net->layers[k + nl->net->layers[k].input_idx].output);
+                    }
+                    else {
+                        inputs.clear();
+                        inputs.push_back(out);
+                    } 
+                    
+                    if(nl->net->layers[k].name == "concat"){
+                        std::vector<at::Tensor> cat_input;
+                        for(int i=0;i<nl->net->layers[k].from_idx.size();i++){
+                            cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
+                        }
+                        out = torch::cat(cat_input, 1);
+                    }
+                    else if(nl->net->layers[k].name == "avg_pool2d"){
+                        out = F::avg_pool2d(out,F::AvgPool2dFuncOptions(3).stride(1).padding(1));
+                    }
+                    else if(nl->net->layers[k].name == "max_pool2d"){
+                        out = F::max_pool2d(out,F::MaxPool2dFuncOptions(3).stride(2));
+                    }
+                    else{
+                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                    }
+                    nl->net->layers[k].output = out;
                 }
-                out = torch::cat(cat_input, 1);
             }
-            else if(nl->net->layers[k].name == "avg_pool2d"){
-                out = F::avg_pool2d(out,F::AvgPool2dFuncOptions(3).stride(1).padding(1));
-            }
-            else if(nl->net->layers[k].name == "max_pool2d"){
-                out = F::max_pool2d(out,F::MaxPool2dFuncOptions(3).stride(2));
-            }
-            else{
-                out = nl->net->layers[k].layer.forward(inputs).toTensor();
-                //event
-            }
-            nl->net->layers[k].output = out;
+            k--;
+            //int record = nl->net->layers[--k].event_idx;
+            //cudaEventRecord(nl->net->record[record], 0);
         }
-        int record = nl->net->layers[--k].event_idx;
-        //cudaEventRecord(nl->net->record[record], 0);
-        
-    }
-    else if(nl->net->layers[k].name == "concat"){  //brach out
-        std::vector<at::Tensor> cat_input;
-        for(int i=0;i<nl->net->layers[k].from_idx.size();i++){
-            cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
+        else if(nl->net->layers[k].name == "concat"){  //brach out
+            std::vector<at::Tensor> cat_input;
+            for(int i=0;i<nl->net->layers[k].from_idx.size();i++){
+                cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
+            }
+            out = torch::cat(cat_input, 1);
         }
-        out = torch::cat(cat_input, 1);
+        else{
+            out = nl->net->layers[k].layer.forward(inputs).toTensor();
+        }
     }
-	else{
-		out = nl->net->layers[k].layer.forward(inputs).toTensor();
-	}
     if(nl->net->layers[k].event_idx >= 0){
 		//cudaEventSynchronize(nl->net->record[nl->net->layers[k].event_idx]);
 		nl->net->layers[k].output = out;
 		nl->net->layers[k].exe_success = true;
 	}
-    nl->net->layers[k].output = out.to(at::kCUDA);
+    nl->net->layers[k].output = out;
 
     pthread_mutex_lock(&mutex_t[nl->net->index_n]);
 
@@ -452,7 +456,7 @@ void forward_inception(th_arg *th){
                return;
            }
        }
-       nl->net->index = k + nl->net->layers[k].branch_idx.back(); // last layer of branch index
+       nl->net->index = k + nl->net->layers[k].branch_idx.back(); // last layer index of branch
        cond_i[nl->net->index_n]=0;
        pthread_cond_signal(&cond_t[nl->net->index_n]);
     }

@@ -16,7 +16,7 @@
 #include "test.h"
 #include "alex.h"
 #include "vgg.h"
-#include "resnet18.h"
+#include "resnet.h"
 #include "densenet.h"
 #include "squeeze.h"
 #include "mobile.h"
@@ -24,24 +24,24 @@
 #include "inception.h"
 #include "shuffle.h"
 
-#define n_dense 0
-#define n_res 0
-#define n_alex 1
-#define n_vgg 0
-#define n_wide 0
-#define n_squeeze 0
-#define n_mobile 0
-#define n_mnasnet 0
-#define n_inception 0
-#define n_shuffle 0
-#define n_resX 0
+#define n_dense 2
+#define n_res 2
+#define n_alex 2
+#define n_vgg 2
+#define n_wide 2
+#define n_squeeze 2
+#define n_mobile 2
+#define n_mnasnet 2
+#define n_inception 2
+#define n_shuffle 2
+#define n_resX 2
 
-#define n_threads 1
+#define n_threads 10
 
 
 extern void *predict_alexnet(Net *input);
 extern void *predict_vgg(Net *input);
-extern void *predict_resnet18(Net *input);
+extern void *predict_resnet(Net *input);
 extern void *predict_densenet(Net *input);
 extern void *predict_squeeze(Net *input);
 extern void *predict_mobilenet(Net *input);
@@ -76,17 +76,12 @@ int* cond_i;
 std::vector<at::cuda::CUDAStream> streams;
 
 int main(int argc, const char* argv[]) {
-  // static constexpr int kStreamsPerPoolBits = 5;
-  // static constexpr int kStreamsPerPool = 1 << kStreamsPerPoolBits;
-  // for (auto i = decltype(kStreamsPerPool){0}; i < kStreamsPerPool; ++i) {
-  //   cout<<"i = "<<i<<"\n";
-  // }
-
+  
   int n_all = n_alex + n_vgg + n_res + n_dense + n_wide + n_squeeze + n_mobile + n_mnasnet + n_inception + n_shuffle + n_resX;
 
   thpool = thpool_init(n_threads);
 
-  for(int i=0; i<n_all+4; i++){
+  for(int i=0; i<n_streamPerPool; i++){
     //cout<< "Make stream\n";
     streams.push_back(at::cuda::getStreamFromPool(false,0));
     //at::cuda::CUDAMultiStreamGuard multi_guard(streams);
@@ -175,7 +170,7 @@ int main(int argc, const char* argv[]) {
     cerr << "error loading the model\n";
     return -1;
   }
-  cout<<"*** Model Load compelete ***"<<"\n";
+  cout<<"***** Model Load compelete *****"<<"\n";
 
   cond_t = (pthread_cond_t *)malloc(sizeof(pthread_cond_t) * n_all);
   mutex_t = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t) * n_all);
@@ -227,20 +222,26 @@ int main(int argc, const char* argv[]) {
 	  get_submodule_densenet(denseModule[i], net_input_dense[i]);
     std::cout << "End get submodule_densenet "<< i << "\n";
     net_input_dense[i].input = inputs;
+    net_input_dense[i].name = "DenseNet";
+    net_input_dense[i].flatten = 641;
     net_input_dense[i].index_n = i;
   }
 
   for(int i=0;i<n_res;i++){
-	  get_submodule_resnet18(resModule[i], net_input_res[i]);
+	  get_submodule_resnet(resModule[i], net_input_res[i]);
     std::cout << "End get submodule_resnet "<< i << "\n";
+    net_input_res[i].name = "ResNet";
+    net_input_res[i].flatten = net_input_res[i].layers.size()-1;
 	  net_input_res[i].input = inputs;
     net_input_res[i].index_n = i+n_dense;
   }
 
   for(int i=0;i<n_alex;i++){
 	  get_submodule_alexnet(alexModule[i], net_input_alex[i]);
-    std::cout << "End get submodule_alex " << i <<"\n";
+    std::cout << "End get submodule_alexnet " << i <<"\n";
 	  net_input_alex[i].input = inputs;
+    net_input_alex[i].name = "AlexNet";
+    net_input_alex[i].flatten = net_input_alex[i].layers.size()-7;
     net_input_alex[i].index_n = i+ n_res + n_dense;
   }
 
@@ -248,15 +249,17 @@ int main(int argc, const char* argv[]) {
 	  get_submodule_vgg(vggModule[i], net_input_vgg[i]);
     std::cout << "End get submodule_vgg " << i << "\n";
 	  net_input_vgg[i].input = inputs;
-    net_input_vgg[i].flatten = 32;
     net_input_vgg[i].name = "VGG";
+    net_input_vgg[i].flatten = 32;
     net_input_vgg[i].index_n = i + n_alex + n_res + n_dense;
   }
 
   for(int i=0;i<n_wide;i++){
-	  get_submodule_resnet18(wideModule[i], net_input_wide[i]);
+	  get_submodule_resnet(wideModule[i], net_input_wide[i]);
     std::cout << "End get submodule_widenet "<< i << "\n";
 	  net_input_wide[i].input = inputs;
+    net_input_wide[i].name = "WideResNet";
+    net_input_wide[i].flatten = net_input_wide[i].layers.size()-1;
     net_input_wide[i].index_n = i+n_alex + n_res + n_dense + n_vgg;
   }
 
@@ -268,6 +271,8 @@ int main(int argc, const char* argv[]) {
       cudaEventCreate(&event_temp);
       net_input_squeeze[i].record.push_back(event_temp);
     }
+    net_input_squeeze[i].name = "SqueezeNet";
+    net_input_squeeze[i].flatten = net_input_squeeze[i].layers.size()-1;
     net_input_squeeze[i].n_all = n_all;
 	  net_input_squeeze[i].input = inputs;
     net_input_squeeze[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide;
@@ -277,6 +282,8 @@ int main(int argc, const char* argv[]) {
 	  get_submodule_mobilenet(mobileModule[i], net_input_mobile[i]);
     std::cout << "End get submodule_mobilenet "<< i << "\n";
 	  net_input_mobile[i].input = inputs;
+    net_input_mobile[i].name = "Mobile";
+    net_input_mobile[i].flatten = net_input_mobile[i].layers.size()-2;
     net_input_mobile[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze;
   }
 
@@ -284,6 +291,8 @@ int main(int argc, const char* argv[]) {
 	  get_submodule_MNASNet(mnasModule[i], net_input_mnasnet[i]);
     std::cout << "End get submodule_mnasnet "<< i << "\n";
 	  net_input_mnasnet[i].input = inputs;
+    net_input_mnasnet[i].name = "MNASNet";
+    net_input_mnasnet[i].flatten = net_input_mnasnet[i].layers.size()-2;
     net_input_mnasnet[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile;
   }
   for(int i=0;i<n_inception;i++){
@@ -296,6 +305,8 @@ int main(int argc, const char* argv[]) {
     }
     net_input_inception[i].n_all = n_all;
 	  net_input_inception[i].input = inputs2;
+    net_input_inception[i].name = "Inception_v3";
+    net_input_inception[i].flatten = 123;
     net_input_inception[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile + n_mnasnet;
   }
   for(int i=0;i<n_shuffle;i++){
@@ -308,12 +319,16 @@ int main(int argc, const char* argv[]) {
     }
     net_input_shuffle[i].n_all = n_all;
 	  net_input_shuffle[i].input = inputs;
+    net_input_shuffle[i].name = "ShuffleNet";
+    net_input_shuffle[i].flatten = 38;
     net_input_shuffle[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile + n_mnasnet + n_inception;
   }
   for(int i=0;i<n_resX;i++){
-	  get_submodule_resnet18(resXModule[i], net_input_resX[i]);
+	  get_submodule_resnet(resXModule[i], net_input_resX[i]);
     std::cout << "End get submodule_resnext "<< i << "\n";
 	  net_input_resX[i].input = inputs;
+    net_input_resX[i].name = "ResNext";
+    net_input_resX[i].flatten = net_input_resX[i].layers.size()-1;
     net_input_resX[i].index_n = i + n_alex + n_res + n_dense + n_vgg + n_wide + n_squeeze + n_mobile + n_mnasnet + n_inception + n_shuffle;
   }
 
@@ -324,7 +339,7 @@ for(int i=0;i<n_dense;i++){
     }
   }
   for(int i=0;i<n_res;i++){
-    if (pthread_create(&networkArray_res[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_res[i]) < 0){
+    if (pthread_create(&networkArray_res[i], NULL, (void *(*)(void*))predict_resnet, &net_input_res[i]) < 0){
       perror("thread error");
       exit(0);
     }
@@ -342,7 +357,7 @@ for(int i=0;i<n_dense;i++){
     }
   }
   for(int i=0;i<n_wide;i++){
-    if (pthread_create(&networkArray_wide[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_wide[i]) < 0){
+    if (pthread_create(&networkArray_wide[i], NULL, (void *(*)(void*))predict_resnet, &net_input_wide[i]) < 0){
       perror("thread error");
       exit(0);
     }
@@ -382,7 +397,7 @@ for(int i=0;i<n_dense;i++){
     }
   }
   for(int i=0;i<n_resX;i++){
-    if (pthread_create(&networkArray_resX[i], NULL, (void *(*)(void*))predict_resnet18, &net_input_resX[i]) < 0){
+    if (pthread_create(&networkArray_resX[i], NULL, (void *(*)(void*))predict_resnet, &net_input_resX[i]) < 0){
       perror("thread error");
       exit(0);
     }

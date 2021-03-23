@@ -1,4 +1,4 @@
-#include <torch/script.h> // 필요한 단 하나의 헤더파일.
+#include <torch/script.h>
 #include <torch/torch.h>
 #include <typeinfo>
 #include <inttypes.h>
@@ -19,6 +19,7 @@ void get_submodule_shuffle(torch::jit::script::Module module, Net &net){
     if(module.children().size() == 0){
         t_layer.input_idx = -1;
         t_layer.layer = module;
+        t_layer.name = "normal";
         t_layer.exe_success = false;
         net.layers.push_back(t_layer);
         return;
@@ -65,7 +66,7 @@ void get_submodule_shuffle(torch::jit::script::Module module, Net &net){
                     t_layer.exe_success = false;
                     net.layers.push_back(t_layer);
                 }
-        }else if(children.name.find("conv") != std::string::npos){
+        }else if(children.name.find("conv") != std::string::npos){ //conv1, conv5
                 t_layer.input_idx = -1;
                 t_layer.name = children.name;
                 t_layer.layer = children.value;
@@ -90,35 +91,34 @@ at::Tensor channel_shuffle(at::Tensor x, int groups){
         return x;
 }
 
-void *predict_shuffle(Net *input){
-        std::vector<torch::jit::IValue> inputs = input->input;
+void *predict_shuffle(Net *shuffle){
+        std::vector<torch::jit::IValue> inputs = shuffle->input;
 	int i;
-	//std::cout<<"input layers size = "<<input->layers.size()<<"\n";
-	for(i=0;i<input->layers.size();i++){
-		pthread_mutex_lock(&mutex_t[input->index_n]);
-		cond_i[input->index_n] = 1;
-                input->layers[i].exe_success = false;
+	
+	for(i=0;i<shuffle->layers.size();i++){
+		pthread_mutex_lock(&mutex_t[shuffle->index_n]);
+		cond_i[shuffle->index_n] = 1;
+                shuffle->layers[i].exe_success = false;
 
-		netlayer nl;// = (netlayer *)malloc(sizeof(netlayer));
-		nl.net = input;
+		netlayer nl;
+		nl.net = shuffle;
 		nl.net->index = i;
 
 		th_arg th;
 		th.arg = &nl;
 
-		//std::cout << "Before thpool add work Shuffle "<< i << "\n";
 		thpool_add_work(thpool,(void(*)(void *))forward_shuffle,&th);
-		//std::cout << "After thpool add work Shuffle "<< i << "\n";
-		while (cond_i[input->index_n] == 1)
+
+		while (cond_i[shuffle->index_n] == 1)
     	        {
-           	        pthread_cond_wait(&cond_t[input->index_n], &mutex_t[input->index_n]);
+           	        pthread_cond_wait(&cond_t[shuffle->index_n], &mutex_t[shuffle->index_n]);
     	        }
-		input->input.clear();
-		input->input.push_back(input->layers[i].output);
-		pthread_mutex_unlock(&mutex_t[input->index_n]);
+		shuffle->input.clear();
+		shuffle->input.push_back(shuffle->layers[i].output);
+		pthread_mutex_unlock(&mutex_t[shuffle->index_n]);
 	}
-	std::cout<<"\n*****Shuffle result*****" << "\n";
-	std::cout<<(input->layers[i-1].output).slice(/*dim=*/1, /*start=*/0, /*end=*/15) <<"\n";
+	std::cout<<"\n*****"<<shuffle->name<<" result*****" << "\n";
+	std::cout<<(shuffle->layers[i-1].output).slice(/*dim=*/1, /*start=*/0, /*end=*/15) <<"\n";
 }
 
 void forward_shuffle(th_arg *th){
@@ -128,7 +128,9 @@ void forward_shuffle(th_arg *th){
         int k = nl->net->index;
         int n_all = nl->net->n_all;
         int j;
-        at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
+        std::vector<int> stream_id = {nl->net->index_n, n_streamPerPool-3};
+        //at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
+
         if(k==0) 
                 inputs = nl->net->input;
         else 
@@ -138,54 +140,58 @@ void forward_shuffle(th_arg *th){
 		cond_i[nl->net->index_n]=0;
 		pthread_cond_signal(&cond_t[nl->net->index_n]);
 	}
-        //out<<"k = "<<k<<"   "<<nl->net->layers[k].name<<"\n";
         pthread_mutex_unlock(&mutex_t[nl->net->index_n]);
 
         at::Tensor out;
-        if(k == nl->net->layers.size()-1){  //mean
-                out = inputs[0].toTensor().mean({2,3});
-                inputs.clear();
-                inputs.push_back(out);
-                out = nl->net->layers[k].layer.forward(inputs).toTensor();
-	}
-	else if(nl->net->layers[k].name == "concat"){
-		std::vector<at::Tensor> cat_input;
-                for(int i=0;i<nl->net->layers[k].from_idx.size();i++){
-                        if(nl->net->layers[k].from_idx[i]>=0)
-                                cat_input.push_back(nl->net->chunk[nl->net->layers[k].from_idx[i]]);
-                        else
-                                cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
-                }
-                //cout<<"concat = "<<nl->net->index_n<<"layer = "<<k<<"  "<<cat_input.size()<<"\n";
-                // for(int i=0;i<cat_input.size();i++){
-                //         cout<<cat_input[i].sizes()<<" ";
-                // }
-                //cout<<"\n";
-                out = torch::cat(cat_input, 1);
-                out = channel_shuffle(out, 2);
-	}else{
-                //chunk_and_branch , branch1, branch2 , conv, maxpool
-                if(nl->net->layers[k].name == "branch1"){
-                        j=1;
-                        at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
-                        //cout<<"get branch1 "<<at::cuda::getCurrentCUDAStream(0)<<"\n";
-                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
-                        //cudaEventRecord(nl->net->record[0],0);
-                }else if(nl->net->layers[k].name == "branch2"){
-                        j=-1;
-                        at::cuda::setCurrentCUDAStream(streams[(nl->net->n_all)+3]);
-                        //cout<<"get branch2 "<<at::cuda::getCurrentCUDAStream(0)<<"\n";
-                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
-                        //cudaEventRecord(nl->net->record[1],0);
-                }else if(nl->net->layers[k].name == "chunk_and_branch2"){
-                        nl->net->chunk = inputs[0].toTensor().chunk(2,1); //check
+
+        {
+                at::cuda::CUDAStreamGuard guard(streams[stream_id[0]]);
+
+                if(k == nl->net->flatten){  //mean
+                        out = inputs[0].toTensor().mean({2,3});
                         inputs.clear();
-                        inputs.push_back(nl->net->chunk[1]);
+                        inputs.push_back(out);
                         out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                }
+                else if(nl->net->layers[k].name == "concat"){
+                        std::vector<at::Tensor> cat_input;
+                        for(int i=0;i<nl->net->layers[k].from_idx.size();i++){
+                                if(nl->net->layers[k].from_idx[i]>=0)
+                                        cat_input.push_back(nl->net->chunk[nl->net->layers[k].from_idx[i]]);
+                                else
+                                        cat_input.push_back(nl->net->layers[k + nl->net->layers[k].from_idx[i]].output);
+                        }
+                        out = torch::cat(cat_input, 1);
+                        out = channel_shuffle(out, 2);
                 }else{
-                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                        //chunk_and_branch , branch1, branch2 , conv, maxpool
+                        if(nl->net->layers[k].name == "branch1"){
+                                //at::cuda::setCurrentCUDAStream(streams[(nl->net->index_n)]);
+                                {
+                                        at::cuda::CUDAStreamGuard guard(streams[stream_id[0]]);
+                                        j=1;
+                                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                                        //cudaEventRecord(nl->net->record[0],0);
+                                }
+                        }else if(nl->net->layers[k].name == "branch2"){
+                                //at::cuda::setCurrentCUDAStream(streams[(nl->net->n_all)+3]);
+                                {
+                                        at::cuda::CUDAStreamGuard guard(streams[stream_id[1]]);
+                                        j=-1;
+                                        out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                                }
+                                //cudaEventRecord(nl->net->record[1],0);
+                        }else if(nl->net->layers[k].name == "chunk_and_branch2"){
+                                nl->net->chunk = inputs[0].toTensor().chunk(2,1);
+                                inputs.clear();
+                                inputs.push_back(nl->net->chunk[1]);
+                                out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                        }else{
+                                out = nl->net->layers[k].layer.forward(inputs).toTensor();
+                        }
                 }
         }
+       
         if(nl->net->layers[k].name == "branch1"){
 		//cudaEventSynchronize(nl->net->record[0]);
 		nl->net->layers[k].output = out;
